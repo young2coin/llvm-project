@@ -1,0 +1,3 @@
+/data/dagongcheng/yktest/llvm-newest/llvm-project/build/bin/mlir-opt -one-shot-bufferize="unknown-type-conversion=identity-layout-map function-boundary-type-conversion=identity-layout-map bufferize-function-boundaries" --buffer-results-to-out-params="hoist-static-allocs=1"  conv-linalg.mlir > buffer-conv.mlir
+
+/data/dagongcheng/yktest/llvm-newest/llvm-project/build/bin/mlir-opt --split-input-file  --convert-linalg-to-affine-loops --cse buffer-conv.mlir > affine.mlir
