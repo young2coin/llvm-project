@@ -16,6 +16,14 @@ affine-optimize:
 	$(MLIR_OPT) --affine-loop-fusion affine.mlir  > affine-fusion__tmp.mlir
 	$(MLIR_OPT) --affine-loop-tile="tile-size=32"  affine-fusion__tmp.mlir > affine-tile__tmp.mlir
 
+
+/data/dagongcheng/yktest/llvm-newest/llvm-project/build/bin/mlir-opt  --affine-parallelize="max-nested=1" --lower-affine affine-tile.mlir > affine-lower.mlir
+/data/dagongcheng/yktest/llvm-newest/llvm-project/build/bin/mlir-opt  --gpu-map-parallel-loops affine-lower.mlir > scf_map.mlir 
+/data/dagongcheng/yktest/llvm-newest/llvm-project/build/bin/mlir-opt  -convert-parallel-loops-to-gpu scf_map.mlir > gpu.mlir
+/data/dagongcheng/yktest/llvm-newest/llvm-project/build/bin/mlir-opt --gpu-kernel-outlining -allow-unregistered-dialect gpu.mlir > gpu1.mlir
+/data/dagongcheng/yktest/llvm-newest/llvm-project/build/bin/mlir-opt --gpu-lower-to-nvvm-pipeline="host-bare-ptr-calling-convention=1 kernel-bare-ptr-calling-convention=1 cubin-chip=sm_70 cubin-format=fatbin" --reconcile-unrealized-casts --allow-unregistered-dialect gpu1.mlir >  llvm.mlir
+
+
 all: py2snn snn2linalg linalg2buffer buffer2affine affine-optimize affine2emitc emitc2c
 
 assembly:
