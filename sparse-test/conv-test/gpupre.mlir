@@ -5,10 +5,11 @@ module attributes {gpu.container_module, llvm.data_layout = "e-m:e-p270:32:32-p2
   memref.global "private" constant @__constant_4xi32 : memref<4xi32> = dense<[0, 2, 3, 1]> {alignment = 64 : i64}
   memref.global "private" constant @__constant_1xf32 : memref<1xf32> = dense<0.000000e+00> {alignment = 64 : i64}
   memref.global "private" constant @__constant_1x1x2x2xf32 : memref<1x1x2x2xf32> = dense<[[[[1.000000e+00, 2.000000e+00], [3.000000e+00, 4.000000e+00]]]]> {alignment = 64 : i64}
-  func.func @main_graph(%arg0: memref<1x1x28x28xf32> {onnx.name = "input"}, %arg1: memref<1x1x27x27xf32> {onnx.name = "output"}) {
+  func.func @conv(%arg0: memref<1x1x28x28xf32> {onnx.name = "input"}, %arg1: memref<1x1x27x27xf32> {onnx.name = "output"}) {
+    %allocpre = memref.alloc() : memref<1x1x1x1xf32>
     %token0 = gpu.wait async
     %alloc, %asyncToken = gpu.alloc async [%token0] () : memref<1x1x1x1xf32>
-    // %alloc = memref.alloc() : memref<1x1x1x1xf32>
+    %alloc_copy = gpu.memcpy async [%asyncToken] %alloc, %allocpre : memref<1x1x1x1xf32>, memref<1x1x1x1xf32>
     %token1 = gpu.wait async
 
     %c0 = arith.constant 0 : index
@@ -16,15 +17,17 @@ module attributes {gpu.container_module, llvm.data_layout = "e-m:e-p270:32:32-p2
     %c0_1 = arith.constant 0 : index
     %c0_2 = arith.constant 0 : index
     %c0_3 = arith.constant 0 : index
-    // %alloc_4 = memref.alloc() : memref<1x1x1x1xf32>
+    %alloc_4pre = memref.alloc() : memref<1x1x1x1xf32>
     %alloc_4, %asyncToken1 = gpu.alloc async [%token1] () : memref<1x1x1x1xf32>
+    %alloc4_copy = gpu.memcpy async [%asyncToken1] %alloc_4, %alloc_4pre : memref<1x1x1x1xf32>, memref<1x1x1x1xf32>
     %token2 = gpu.wait async
 
 
     %c0_5 = arith.constant 0 : index
     %c0_6 = arith.constant 0 : index
-    // %alloc_7 = memref.alloc() : memref<1x1x1x1xf32>
+    %alloc_7pre = memref.alloc() : memref<1x1x1x1xf32>
     %alloc_7, %asyncToken2 = gpu.alloc async [%token2] () : memref<1x1x1x1xf32>
+    %alloc7_copy = gpu.memcpy async [%asyncToken2] %alloc_7, %alloc_7pre : memref<1x1x1x1xf32>, memref<1x1x1x1xf32>
     %token3 = gpu.wait async
 
 
@@ -54,8 +57,9 @@ module attributes {gpu.container_module, llvm.data_layout = "e-m:e-p270:32:32-p2
     %c0_13 = arith.constant 0 : index
     %c32_14 = arith.constant 32 : index
     %2 = affine.apply #map(%c1_12)[%c0_13, %c32_14]
-    gpu.wait [%alloc10_copy, %allocarg0_copy, %allocarg1_copy]
-    %runkernel = gpu.launch_func async @main_graph_kernel::@main_graph_kernel blocks in (%1, %c1_11, %c1_11) threads in (%2, %c1_11, %c1_11)  args(%c32 : index, %c0_10 : index, %cst : f32, %alloc : memref<1x1x1x1xf32>, %alloc_arg0 : memref<1x1x28x28xf32>, %c0_6 : index, %c0_5 : index, %alloc_4 : memref<1x1x1x1xf32>, %alloc_10 : memref<1x1x2x2xf32>, %c0_9 : index, %c0_8 : index, %alloc_7 : memref<1x1x1x1xf32>, %c0_3 : index, %c0_1 : index, %c0_2 : index, %alloc_arg1 : memref<1x1x27x27xf32>)
+    gpu.wait [%alloc_copy, %alloc4_copy, %alloc7_copy, %alloc10_copy, %allocarg0_copy, %allocarg1_copy]
+
+    %runkernel = gpu.launch_func async @conv_kernel::@conv_kernel blocks in (%1, %c1_11, %c1_11) threads in (%2, %c1_11, %c1_11)  args(%c32 : index, %c0_10 : index, %cst : f32, %alloc : memref<1x1x1x1xf32>, %alloc_arg0 : memref<1x1x28x28xf32>, %c0_6 : index, %c0_5 : index, %alloc_4 : memref<1x1x1x1xf32>, %alloc_10 : memref<1x1x2x2xf32>, %c0_9 : index, %c0_8 : index, %alloc_7 : memref<1x1x1x1xf32>, %c0_3 : index, %c0_1 : index, %c0_2 : index, %alloc_arg1 : memref<1x1x27x27xf32>)
     %re_copy = gpu.memcpy async [%runkernel] %arg1, %alloc_arg1 : memref<1x1x27x27xf32>, memref<1x1x27x27xf32>
 
     %24 = gpu.dealloc async [%re_copy] %alloc : memref<1x1x1x1xf32>
@@ -72,8 +76,8 @@ module attributes {gpu.container_module, llvm.data_layout = "e-m:e-p270:32:32-p2
     gpu.wait [%24, %26, %28, %30, %32, %34]
     return
   }
-  gpu.module @main_graph_kernel {
-    gpu.func @main_graph_kernel(%arg0: index, %arg1: index, %arg2: f32, %arg3: memref<1x1x1x1xf32>, %arg4: memref<1x1x28x28xf32>, %arg5: index, %arg6: index, %arg7: memref<1x1x1x1xf32>, %arg8: memref<1x1x2x2xf32>, %arg9: index, %arg10: index, %arg11: memref<1x1x1x1xf32>, %arg12: index, %arg13: index, %arg14: index, %arg15: memref<1x1x27x27xf32>) kernel {
+  gpu.module @conv_kernel {
+    gpu.func @conv_kernel(%arg0: index, %arg1: index, %arg2: f32, %arg3: memref<1x1x1x1xf32>, %arg4: memref<1x1x28x28xf32>, %arg5: index, %arg6: index, %arg7: memref<1x1x1x1xf32>, %arg8: memref<1x1x2x2xf32>, %arg9: index, %arg10: index, %arg11: memref<1x1x1x1xf32>, %arg12: index, %arg13: index, %arg14: index, %arg15: memref<1x1x27x27xf32>) kernel {
       %block_id_x = gpu.block_id  x
       %block_id_y = gpu.block_id  y
       %block_id_z = gpu.block_id  z
