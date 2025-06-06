@@ -1253,6 +1253,95 @@ static LogicalResult rewriteLIF(PatternRewriter &rewriter,
   return success();
   }
 
+
+ ///match LIF kernel
+static LogicalResult rewriteLIF4D(PatternRewriter &rewriter,
+                                linalg::GenericOp op, bool enableRT) {
+  Location loc = op.getLoc();
+  Value A = op.getOperand(0);
+  Value B = op.getOperand(1);
+  Value output = op.getOperand(2);
+  SmallVector<Value> tokens;
+
+  // 验证稀疏输入和密集输出
+  SparseTensorType aTp = getSparseTensorType(A);
+  SparseTensorType bTp = getSparseTensorType(B);
+  SparseTensorType cTp = getSparseTensorType(output);
+  auto format = getCuSparseFormat2(aTp, bTp, cTp, enableRT, /*isMatVec=*/false);
+  // auto format = CuSparseFormat::kCOO;
+  if (format == CuSparseFormat::kNone || format == CuSparseFormat::kBSR)
+    return failure();
+
+  
+  //cpu->GPU
+  // Start sparse kernel and copy data from host to device.
+  //   a : memR/memC/memV -> rowA,colA,valA
+  //   b : bufB           -> matB
+  Value nseA = rewriter.create<NumberOfEntriesOp>(loc, A);
+  Value szmA = linalg::createOrFoldDimOp(rewriter, loc, A, 0);
+  Value szkA = linalg::createOrFoldDimOp(rewriter, loc, A, 1);
+
+  Value nseB = rewriter.create<NumberOfEntriesOp>(loc, B);
+  Value szmB = linalg::createOrFoldDimOp(rewriter, loc, B, 0);  
+  Value szkB = linalg::createOrFoldDimOp(rewriter, loc, B, 1);  
+
+
+  
+
+  // 提取稀疏元数据
+  Value memRA = genFirstPosOrCrds(rewriter, loc, A, format, enableRT);
+  Value memCA = genSecondCrds(rewriter, loc, A, format, enableRT); // or empty
+  Value memVA = rewriter.create<ToValuesOp>(loc, A);    
+
+  Value memRB = genFirstPosOrCrds(rewriter, loc, B, format, enableRT);
+  Value memCB = genSecondCrds(rewriter, loc, B, format, enableRT); // or empty
+  Value memVB = rewriter.create<ToValuesOp>(loc, B);
+
+  Value bufout = genTensorToMemref(rewriter, loc, output);
+
+  SmallVector<Value> scalars;
+  SmallVector<Value> buffers;
+
+  scalars.push_back(szmA);
+  scalars.push_back(szkA);
+
+  scalars.push_back(szmB);
+  scalars.push_back(szkB);
+
+  buffers.push_back(bufout);
+  buffers.push_back(memRA);
+  buffers.push_back(memCA);
+  buffers.push_back(memVA);
+
+  buffers.push_back(memRB);
+  buffers.push_back(memCB);
+  buffers.push_back(memVB);
+
+  SmallVector<Value> args;
+  Value out = genParametersIn(rewriter, loc, scalars, buffers, args, tokens,
+    /*useHostRegistrationForOut=*/false);
+  // Set up GPU module and construct GPU function.
+  auto saveIp = rewriter.saveInsertionPoint();
+  ModuleOp topModule = op->getParentOfType<ModuleOp>();
+  auto gpuModule = genLIFGPUModule(rewriter, topModule);
+
+  auto gpuFunc = genLIFGPUFunc(rewriter, gpuModule, args);
+
+  genLIFGPUCode(rewriter, gpuFunc, op, scalars, buffers);
+  rewriter.restoreInsertionPoint(saveIp);
+  genBlockingWait(rewriter, loc, tokens);
+  tokens.clear();
+  Value kernelToken =
+    genLaunchLIFGPUFunc(rewriter, gpuFunc, szmA, args, tokens);
+
+  genParametersOut(rewriter, loc, out, kernelToken, scalars, buffers, args,
+                     tokens);
+  genBlockingWait(rewriter, loc, tokens);
+  rewriter.replaceOpWithNewOp<bufferization::ToTensorOp>(op, bufout);
+  return success();
+  } 
+
+
 /// Match and rewrite SpMV kernel.
 static LogicalResult rewriteSpMV(PatternRewriter &rewriter,
                                  linalg::GenericOp op, bool enableRT) {
