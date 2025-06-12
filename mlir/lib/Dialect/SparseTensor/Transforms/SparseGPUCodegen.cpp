@@ -1253,7 +1253,6 @@ static LogicalResult rewriteLIF(PatternRewriter &rewriter,
   return success();
   }
 
-
  ///match LIF kernel
 static LogicalResult rewriteLIF4D(PatternRewriter &rewriter,
                                 linalg::GenericOp op, bool enableRT) {
