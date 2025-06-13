@@ -3,46 +3,31 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torchvision import datasets, transforms
 
-# ----------------------------
-# 1. 基础残差块
-# ----------------------------
-class BasicBlock(nn.Module):
-    def __init__(self, in_channels, out_channels, stride=1):
+class SimpleResidualBlock(nn.Module):
+    def __init__(self, channels):
         super().__init__()
-        self.conv1 = nn.Conv2d(in_channels, out_channels, 3, stride=stride, padding=1, bias=False)
-        self.bn1   = nn.BatchNorm2d(out_channels)
-        self.conv2 = nn.Conv2d(out_channels, out_channels, 3, stride=1, padding=1, bias=False)
-        self.bn2   = nn.BatchNorm2d(out_channels)
-
-        if in_channels != out_channels or stride != 1:
-            self.shortcut = nn.Sequential(
-                nn.Conv2d(in_channels, out_channels, kernel_size=1, stride=stride, bias=False),
-                nn.BatchNorm2d(out_channels),
-            )
-        else:
-            self.shortcut = nn.Identity()
+        self.conv1 = nn.Conv2d(channels, channels, kernel_size=3, stride=1, padding=1)
+        self.conv2 = nn.Conv2d(channels, channels, kernel_size=3, stride=1, padding=1)
 
     def forward(self, x):
-        out = F.relu(self.bn1(self.conv1(x)))
-        out = self.bn2(self.conv2(out))
-        out += self.shortcut(x)
+        identity = x
+        out = F.relu(self.conv1(x))
+        out = self.conv2(out)
+        out += identity  # residual connection
         return F.relu(out)
 
-# ----------------------------
-# 2. 简化 ResNet（仅一个残差块）
-# ----------------------------
-class OneBlockResNet(nn.Module):
+class MinimalResNet(nn.Module):
     def __init__(self):
         super().__init__()
-        self.block = BasicBlock(1, 16, stride=1)  # 1 channel → 16 channels
-        self.avgpool = nn.AdaptiveAvgPool2d((1,1))
-        self.fc = nn.Linear(16, 10)  # 输出 10 类
+        self.conv = nn.Conv2d(1, 1, kernel_size=2, stride=1, padding=0)  # → [1, 1, 27, 27]
+        self.resblock = SimpleResidualBlock(1)
+        self.fc = nn.Linear(1 * 27 * 27, 10)
 
     def forward(self, x):
-        x = self.block(x)           # [1, 1, 28, 28] → [1, 16, 28, 28]
-        x = self.avgpool(x)         # → [1, 16, 1, 1]
-        x = torch.flatten(x, 1)     # → [1, 16]
-        x = self.fc(x)              # → [1, 10]
+        x = self.conv(x)              # [1, 1, 27, 27]
+        x = self.resblock(x)         # [1, 1, 27, 27]
+        x = x.view(x.size(0), -1)    # Flatten: [1, 729]
+        x = self.fc(x)               # [1, 10]
         return x
 
 # ----------------------------
@@ -61,7 +46,7 @@ print("Sample label:", label)
 # ----------------------------
 # 4. 导出为 ONNX
 # ----------------------------
-model = OneBlockResNet()
+model = MinimalResNet()
 model.eval()
 
 onnx_path = "model.onnx"

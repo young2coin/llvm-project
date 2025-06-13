@@ -1,25 +1,23 @@
 module attributes {llvm.data_layout = "e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128", llvm.target_triple = "x86_64-unknown-linux-gnu", "onnx-mlir.symbol-postfix" = "model"} {
   func.func @main_graph(%arg0: tensor<1x1x28x28xf32> {onnx.name = "input"}) -> (tensor<1x10xf32> {onnx.name = "output"}) {
-    %0 = onnx.Constant dense<[1, 16, 28, 28]> : tensor<4xi64>
-    %1 = onnx.Constant dense<[[0.872135937], [5.802210e-01], [0.899493098], [0.585010827], [0.720269381], [-0.468282849], [-0.823083221], [-0.573663116], [0.12428686], [-0.619635344], [-0.818774402], [-0.981852531], [0.190309048], [-0.366612732], [0.341507643], [0.157721326]]> : tensor<16x1xf32>
-    %2 = onnx.Constant dense<[1, 1, -1]> : tensor<3xi64>
-    %3 = onnx.Constant dense_resource<__elided__> : tensor<10x16xf32>
-    %4 = onnx.Constant dense<[0.191448957, 4.527250e-02, -0.186475337, -0.0253266096, -0.171667874, 0.164623708, -0.00522086024, 0.194152027, 0.0949379801, -0.113311231]> : tensor<10xf32>
-    %5 = onnx.Constant dense_resource<__elided__> : tensor<16x1x3x3xf32>
-    %6 = onnx.Constant dense<0.000000e+00> : tensor<16xf32>
-    %7 = onnx.Constant dense_resource<__elided__> : tensor<16x16x3x3xf32>
-    %8 = "onnx.Conv"(%arg0, %5, %6) {auto_pad = "NOTSET", dilations = [1, 1], group = 1 : si64, kernel_shape = [3, 3], onnx_node_name = "/block/conv1/Conv", pads = [1, 1, 1, 1], strides = [1, 1]} : (tensor<1x1x28x28xf32>, tensor<16x1x3x3xf32>, tensor<16xf32>) -> tensor<1x16x28x28xf32>
-    %9 = "onnx.Relu"(%8) {onnx_node_name = "/block/Relu"} : (tensor<1x16x28x28xf32>) -> tensor<1x16x28x28xf32>
-    %10 = "onnx.Conv"(%9, %7, %6) {auto_pad = "NOTSET", dilations = [1, 1], group = 1 : si64, kernel_shape = [3, 3], onnx_node_name = "/block/conv2/Conv", pads = [1, 1, 1, 1], strides = [1, 1]} : (tensor<1x16x28x28xf32>, tensor<16x16x3x3xf32>, tensor<16xf32>) -> tensor<1x16x28x28xf32>
-    %11 = "onnx.Reshape"(%arg0, %2) {allowzero = 0 : si64, onnx_node_name = "/block/shortcut/shortcut.0/Conv_0"} : (tensor<1x1x28x28xf32>, tensor<3xi64>) -> tensor<1x1x784xf32>
-    %12 = "onnx.MatMul"(%1, %11) {onnx_node_name = "/block/shortcut/shortcut.0/Conv_1"} : (tensor<16x1xf32>, tensor<1x1x784xf32>) -> tensor<1x16x784xf32>
-    %13 = "onnx.Reshape"(%12, %0) {allowzero = 0 : si64, onnx_node_name = "/block/shortcut/shortcut.0/Conv_2"} : (tensor<1x16x784xf32>, tensor<4xi64>) -> tensor<1x16x28x28xf32>
-    %14 = "onnx.Add"(%10, %13) {onnx_node_name = "/block/Add"} : (tensor<1x16x28x28xf32>, tensor<1x16x28x28xf32>) -> tensor<1x16x28x28xf32>
-    %15 = "onnx.Relu"(%14) {onnx_node_name = "/block/Relu_1"} : (tensor<1x16x28x28xf32>) -> tensor<1x16x28x28xf32>
-    %16 = "onnx.ReduceMeanV13"(%15) {axes = [2, 3], keepdims = 1 : si64, onnx_node_name = "/avgpool/GlobalAveragePool_3"} : (tensor<1x16x28x28xf32>) -> tensor<1x16x1x1xf32>
-    %17 = "onnx.Flatten"(%16) {axis = 1 : si64, onnx_node_name = "/Flatten"} : (tensor<1x16x1x1xf32>) -> tensor<1x16xf32>
-    %18 = "onnx.Gemm"(%17, %3, %4) {alpha = 1.000000e+00 : f32, beta = 1.000000e+00 : f32, onnx_node_name = "/fc/Gemm", transA = 0 : si64, transB = 1 : si64} : (tensor<1x16xf32>, tensor<10x16xf32>, tensor<10xf32>) -> tensor<1x10xf32>
-    return %18 : tensor<1x10xf32>
+    %0 = onnx.Constant dense<[1, -1]> : tensor<2xi64>
+    %1 = onnx.Constant dense<[[[[-0.158224165, 0.0701141357], [0.250195086, 0.289902091]]]]> : tensor<1x1x2x2xf32>
+    %2 = onnx.Constant dense<0.192975342> : tensor<1xf32>
+    %3 = onnx.Constant dense<[[[[0.180015489, 0.189732239, 0.156154677], [-0.0984966754, -0.157566234, 0.189530134], [0.0947859287, -5.154860e-02, -0.011935751]]]]> : tensor<1x1x3x3xf32>
+    %4 = onnx.Constant dense<0.163654491> : tensor<1xf32>
+    %5 = onnx.Constant dense<[[[[-0.250330418, -0.29953891, 0.237646103], [0.0113014784, 0.284307182, 0.00926641654], [-0.108876944, -0.0126076546, 0.288446516]]]]> : tensor<1x1x3x3xf32>
+    %6 = onnx.Constant dense<-0.260521889> : tensor<1xf32>
+    %7 = onnx.Constant dense_resource<__elided__> : tensor<10x729xf32>
+    %8 = onnx.Constant dense<[2.847860e-02, 0.0124141686, 0.0158686377, -0.0231720172, -0.0216992293, 0.0268694349, -0.0108217839, 0.0137206763, 0.0309294946, -0.0350712463]> : tensor<10xf32>
+    %9 = "onnx.Conv"(%arg0, %1, %2) {auto_pad = "NOTSET", dilations = [1, 1], group = 1 : si64, kernel_shape = [2, 2], onnx_node_name = "/conv/Conv", pads = [0, 0, 0, 0], strides = [1, 1]} : (tensor<1x1x28x28xf32>, tensor<1x1x2x2xf32>, tensor<1xf32>) -> tensor<1x1x27x27xf32>
+    %10 = "onnx.Conv"(%9, %3, %4) {auto_pad = "NOTSET", dilations = [1, 1], group = 1 : si64, kernel_shape = [3, 3], onnx_node_name = "/resblock/conv1/Conv", pads = [1, 1, 1, 1], strides = [1, 1]} : (tensor<1x1x27x27xf32>, tensor<1x1x3x3xf32>, tensor<1xf32>) -> tensor<1x1x27x27xf32>
+    %11 = "onnx.Relu"(%10) {onnx_node_name = "/resblock/Relu"} : (tensor<1x1x27x27xf32>) -> tensor<1x1x27x27xf32>
+    %12 = "onnx.Conv"(%11, %5, %6) {auto_pad = "NOTSET", dilations = [1, 1], group = 1 : si64, kernel_shape = [3, 3], onnx_node_name = "/resblock/conv2/Conv", pads = [1, 1, 1, 1], strides = [1, 1]} : (tensor<1x1x27x27xf32>, tensor<1x1x3x3xf32>, tensor<1xf32>) -> tensor<1x1x27x27xf32>
+    %13 = "onnx.Add"(%12, %9) {onnx_node_name = "/resblock/Add"} : (tensor<1x1x27x27xf32>, tensor<1x1x27x27xf32>) -> tensor<1x1x27x27xf32>
+    %14 = "onnx.Relu"(%13) {onnx_node_name = "/resblock/Relu_1"} : (tensor<1x1x27x27xf32>) -> tensor<1x1x27x27xf32>
+    %15 = "onnx.Reshape"(%14, %0) {allowzero = 0 : si64, onnx_node_name = "/Reshape"} : (tensor<1x1x27x27xf32>, tensor<2xi64>) -> tensor<1x729xf32>
+    %16 = "onnx.Gemm"(%15, %7, %8) {alpha = 1.000000e+00 : f32, beta = 1.000000e+00 : f32, onnx_node_name = "/fc/Gemm", transA = 0 : si64, transB = 1 : si64} : (tensor<1x729xf32>, tensor<10x729xf32>, tensor<10xf32>) -> tensor<1x10xf32>
+    return %16 : tensor<1x10xf32>
   }
   "onnx.EntryPoint"() {func = @main_graph} : () -> ()
 }
