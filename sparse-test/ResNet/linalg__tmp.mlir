@@ -1,3 +1,11 @@
+// Input: [1, 1, 28, 28]
+// ↓ Conv2d(1→1, kernel=2, stride=1, padding=0) → [1, 1, 27, 27]
+// relu
+// ↓ ResidualBlock (保持维度)
+// ↓ Flatten → [1, 729]
+// ↓ FC(729 → 10)
+// ↓ relu Output: [1, 10]
+
 #map = affine_map<(d0, d1, d2, d3) -> (0)>
 #map1 = affine_map<(d0, d1, d2, d3) -> (d0, d1, d2, d3)>
 #map2 = affine_map<(d0, d1, d2, d3) -> (0, 0, d2, d3)>
@@ -44,12 +52,25 @@ module attributes {llvm.data_layout = "e-m:e-p270:32:32-p271:32:32-p272:64:64-i6
     %cst_27 = arith.constant dense<[0, 2, 3, 1]> : tensor<4xi32>
     %1 = tensor.empty() : tensor<1x2x2x1xf32>
     %transposed_28 = linalg.transpose ins(%cst_0 : tensor<1x1x2x2xf32>) outs(%1 : tensor<1x2x2x1xf32>) permutation = [0, 2, 3, 1] 
-    %2 = tensor.empty() : tensor<1x27x27x1xf32>
-    %3 = linalg.generic {indexing_maps = [#map, #map1], iterator_types = ["parallel", "parallel", "parallel", "parallel"]} ins(%cst_1 : tensor<1xf32>) outs(%2 : tensor<1x27x27x1xf32>) {
-    ^bb0(%in: f32, %out: f32):
-      linalg.yield %in : f32
-    } -> tensor<1x27x27x1xf32>
+
+    // %2 = tensor.empty() : tensor<1x27x27x1xf32>
+    // %3 = linalg.generic {indexing_maps = [#map, #map1], iterator_types = ["parallel", "parallel", "parallel", "parallel"]} ins(%cst_1 : tensor<1xf32>) outs(%2 : tensor<1x27x27x1xf32>) {
+    // ^bb0(%in: f32, %out: f32):
+    //   linalg.yield %in : f32
+    // } -> tensor<1x27x27x1xf32>
+    %3 = tensor.empty() : tensor<1x27x27x1xf32>
+
+    %conv28out = tensor.generate {
+  ^bb0(%i: index, %j: index, %k: index, %l: index):
+    %f0 = arith.constant 0.0 : f32
+    tensor.yield %f0 : f32
+  } : tensor<1x1x27x27xf32>
+
     %4 = linalg.conv_2d_nhwc_fhwc {dilations = dense<1> : tensor<2xi64>, strides = dense<1> : tensor<2xi64>} ins(%transposed, %transposed_28 : tensor<1x28x28x1xf32>, tensor<1x2x2x1xf32>) outs(%3 : tensor<1x27x27x1xf32>) -> tensor<1x27x27x1xf32>
+
+    //define conv-28 kernel
+    call @conv(%arg0,%convout1) : (tensor<1x1x28x28xf32>, tensor<1x1x27x27xf32>) -> ()
+
     %cst_29 = arith.constant dense<[0, 3, 1, 2]> : tensor<4xi32>
     %5 = tensor.empty() : tensor<1x1x27x27xf32>
     %transposed_30 = linalg.transpose ins(%4 : tensor<1x27x27x1xf32>) outs(%5 : tensor<1x1x27x27xf32>) permutation = [0, 3, 1, 2] 
@@ -92,15 +113,20 @@ module attributes {llvm.data_layout = "e-m:e-p270:32:32-p271:32:32-p272:64:64-i6
     ^bb0(%arg1: index, %arg2: index, %arg3: index, %arg4: index):
       tensor.yield %cst_61 : f32
     } : tensor<1x27x27x1xf32> to tensor<1x29x29x1xf32>
-    %8 = tensor.empty() : tensor<1x27x27x1xf32>
-    %9 = linalg.generic {indexing_maps = [#map, #map1], iterator_types = ["parallel", "parallel", "parallel", "parallel"]} ins(%cst_3 : tensor<1xf32>) outs(%8 : tensor<1x27x27x1xf32>) {
-    ^bb0(%in: f32, %out: f32):
-      linalg.yield %in : f32
-    } -> tensor<1x27x27x1xf32>
+
+    // %8 = tensor.empty() : tensor<1x27x27x1xf32>
+    // %9 = linalg.generic {indexing_maps = [#map, #map1], iterator_types = ["parallel", "parallel", "parallel", "parallel"]} ins(%cst_3 : tensor<1xf32>) outs(%8 : tensor<1x27x27x1xf32>) {
+    // ^bb0(%in: f32, %out: f32):
+    //   linalg.yield %in : f32
+    // } -> tensor<1x27x27x1xf32>
+    %9 = tensor.empty() : tensor<1x27x27x1xf32>
+
     %10 = linalg.conv_2d_nhwc_fhwc {dilations = dense<1> : tensor<2xi64>, strides = dense<1> : tensor<2xi64>} ins(%padded, %transposed_60 : tensor<1x29x29x1xf32>, tensor<1x3x3x1xf32>) outs(%9 : tensor<1x27x27x1xf32>) -> tensor<1x27x27x1xf32>
     %cst_62 = arith.constant dense<[0, 3, 1, 2]> : tensor<4xi32>
     %11 = tensor.empty() : tensor<1x1x27x27xf32>
     %transposed_63 = linalg.transpose ins(%10 : tensor<1x27x27x1xf32>) outs(%11 : tensor<1x1x27x27xf32>) permutation = [0, 3, 1, 2] 
+
+    //relu
     %12 = tensor.empty() : tensor<1x1x27x27xf32>
     %13 = linalg.generic {indexing_maps = [#map2, #map1], iterator_types = ["parallel", "parallel", "parallel", "parallel"]} ins(%transposed_63 : tensor<1x1x27x27xf32>) outs(%12 : tensor<1x1x27x27xf32>) {
     ^bb0(%in: f32, %out: f32):
@@ -110,6 +136,8 @@ module attributes {llvm.data_layout = "e-m:e-p270:32:32-p271:32:32-p272:64:64-i6
       %29 = arith.maximumf %28, %cst_111 : f32
       linalg.yield %29 : f32
     } -> tensor<1x1x27x27xf32>
+
+
     %c3_64 = arith.constant 3 : index
     %c3_65 = arith.constant 3 : index
     %c1_66 = arith.constant 1 : index
@@ -149,12 +177,15 @@ module attributes {llvm.data_layout = "e-m:e-p270:32:32-p271:32:32-p272:64:64-i6
     ^bb0(%arg1: index, %arg2: index, %arg3: index, %arg4: index):
       tensor.yield %cst_96 : f32
     } : tensor<1x27x27x1xf32> to tensor<1x29x29x1xf32>
-    %16 = tensor.empty() : tensor<1x27x27x1xf32>
-    %17 = linalg.generic {indexing_maps = [#map, #map1], iterator_types = ["parallel", "parallel", "parallel", "parallel"]} ins(%cst_5 : tensor<1xf32>) outs(%16 : tensor<1x27x27x1xf32>) {
-    ^bb0(%in: f32, %out: f32):
-      linalg.yield %in : f32
-    } -> tensor<1x27x27x1xf32>
-    %18 = linalg.conv_2d_nhwc_fhwc {dilations = dense<1> : tensor<2xi64>, strides = dense<1> : tensor<2xi64>} ins(%padded_97, %transposed_95 : tensor<1x29x29x1xf32>, tensor<1x3x3x1xf32>) outs(%17 : tensor<1x27x27x1xf32>) -> tensor<1x27x27x1xf32>
+
+    // %16 = tensor.empty() : tensor<1x27x27x1xf32>
+    // %17 = linalg.generic {indexing_maps = [#map, #map1], iterator_types = ["parallel", "parallel", "parallel", "parallel"]} ins(%cst_5 : tensor<1xf32>) outs(%16 : tensor<1x27x27x1xf32>) {
+    // ^bb0(%in: f32, %out: f32):
+    //   linalg.yield %in : f32
+    // } -> tensor<1x27x27x1xf32>
+    %17 = tensor.empty() : tensor<1x27x27x1xf32>
+
+      %18 = linalg.conv_2d_nhwc_fhwc {dilations = dense<1> : tensor<2xi64>, strides = dense<1> : tensor<2xi64>} ins(%padded_97, %transposed_95 : tensor<1x29x29x1xf32>, tensor<1x3x3x1xf32>) outs(%17 : tensor<1x27x27x1xf32>) -> tensor<1x27x27x1xf32>
     %cst_98 = arith.constant dense<[0, 3, 1, 2]> : tensor<4xi32>
     %19 = tensor.empty() : tensor<1x1x27x27xf32>
     %transposed_99 = linalg.transpose ins(%18 : tensor<1x27x27x1xf32>) outs(%19 : tensor<1x1x27x27xf32>) permutation = [0, 3, 1, 2] 
@@ -168,11 +199,7 @@ module attributes {llvm.data_layout = "e-m:e-p270:32:32-p271:32:32-p272:64:64-i6
     %c27_107 = arith.constant 27 : index
     %c27_108 = arith.constant 27 : index
     %20 = tensor.empty() : tensor<1x1x27x27xf32>
-    %21 = linalg.generic {indexing_maps = [#map2, #map2, #map1], iterator_types = ["parallel", "parallel", "parallel", "parallel"]} ins(%transposed_99, %transposed_30 : tensor<1x1x27x27xf32>, tensor<1x1x27x27xf32>) outs(%20 : tensor<1x1x27x27xf32>) {
-    ^bb0(%in: f32, %in_111: f32, %out: f32):
-      %28 = arith.addf %in, %in_111 : f32
-      linalg.yield %28 : f32
-    } -> tensor<1x1x27x27xf32>
+    //relu
     %22 = tensor.empty() : tensor<1x1x27x27xf32>
     %23 = linalg.generic {indexing_maps = [#map2, #map1], iterator_types = ["parallel", "parallel", "parallel", "parallel"]} ins(%21 : tensor<1x1x27x27xf32>) outs(%22 : tensor<1x1x27x27xf32>) {
     ^bb0(%in: f32, %out: f32):
@@ -182,8 +209,12 @@ module attributes {llvm.data_layout = "e-m:e-p270:32:32-p271:32:32-p272:64:64-i6
       %29 = arith.maximumf %28, %cst_111 : f32
       linalg.yield %29 : f32
     } -> tensor<1x1x27x27xf32>
+
+    //reshape
     %collapsed = tensor.collapse_shape %23 [[0, 1], [2, 3]] : tensor<1x1x27x27xf32> into tensor<1x729xf32>
     %cst_109 = arith.constant dense<[1, 0]> : tensor<2xi64>
+
+    //fc
     %24 = tensor.empty() : tensor<729x10xf32>
     %transposed_110 = linalg.transpose ins(%cst_6 : tensor<10x729xf32>) outs(%24 : tensor<729x10xf32>) permutation = [1, 0] 
     %25 = tensor.empty() : tensor<1x10xf32>
@@ -192,7 +223,23 @@ module attributes {llvm.data_layout = "e-m:e-p270:32:32-p271:32:32-p272:64:64-i6
       linalg.yield %in : f32
     } -> tensor<1x10xf32>
     %27 = linalg.matmul ins(%collapsed, %transposed_110 : tensor<1x729xf32>, tensor<729x10xf32>) outs(%26 : tensor<1x10xf32>) -> tensor<1x10xf32>
+
+
+     %0 = tensor.empty() : tensor<256x256xf32>
+    %transposed = linalg.transpose ins(%cst : tensor<256x256xf32>) outs(%0 : tensor<256x256xf32>) permutation = [1, 0] 
+    %2 = tensor.empty() : tensor<5x256xf32>
+    // %2 = sparse_tensor.convert %0 : tensor<5x256xf32> to tensor<5x256xf32, #COO>
+    %3 = linalg.matmul ins(%arg0, %transposed : tensor<5x256xf32, #CSR>, tensor<256x256xf32>) outs(%2 : tensor<5x256xf32>) -> tensor<5x256xf32>
+
+
+
     return %27 : tensor<1x10xf32>
+  }
+  func.func @conv28(%arg0: tensor<1x1x28x28xf32>, %arg1: tensor<1x1x27x27xf32>) {
+      return
+  }
+  func.func @conv29(%arg0: tensor<1x1x29x29xf32>, %arg1: tensor<1x1x27x27xf32>) {
+      return
   }
 }
 
