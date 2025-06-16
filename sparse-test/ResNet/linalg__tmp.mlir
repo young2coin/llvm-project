@@ -11,8 +11,13 @@
 #map2 = affine_map<(d0, d1, d2, d3) -> (0, 0, d2, d3)>
 #map3 = affine_map<(d0, d1) -> (d1)>
 #map4 = affine_map<(d0, d1) -> (d0, d1)>
-module attributes {llvm.data_layout = "e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128", llvm.target_triple = "x86_64-unknown-linux-gnu", "onnx-mlir.symbol-postfix" = "model"} {
-  func.func @main_graph(%arg0: tensor<1x1x28x28xf32> {onnx.name = "input"}) -> (tensor<1x10xf32> {onnx.name = "output"}) {
+#CSR = #sparse_tensor.encoding<{
+  map = (d0, d1) -> (d0 : dense, d1 : compressed)
+}>
+module {
+  llvm.func @mgpuCreateSparseEnv()
+  llvm.func @mgpuDestroySparseEnv()
+  func.func @resnet(%arg0: tensor<1x1x28x28xf32> {onnx.name = "input"}) -> (tensor<1x10xf32> {onnx.name = "output"}) {
     %cst = arith.constant dense<[1, -1]> : tensor<2xi64>
     %cst_0 = arith.constant dense<[[[[-0.158224165, 0.0701141357], [0.250195086, 0.289902091]]]]> : tensor<1x1x2x2xf32>
     %cst_1 = arith.constant dense<0.192975342> : tensor<1xf32>
@@ -246,7 +251,7 @@ module attributes {llvm.data_layout = "e-m:e-p270:32:32-p271:32:32-p272:64:64-i6
 
     //reshape
     // %collapsed = tensor.collapse_shape %23 [[0, 1], [2, 3]] : tensor<1x1x27x27xf32> into tensor<1x729xf32>
-    %collapsed = tensor.collapse_shape %21 [[0, 1], [2, 3]] : tensor<1x1x27x27xf32> into tensor<1x729xf32>
+    %collapsed = tensor.collapse_shape %transposed_99 [[0, 1], [2, 3]] : tensor<1x1x27x27xf32> into tensor<1x729xf32>
     %cst_109 = arith.constant dense<[1, 0]> : tensor<2xi64>
 
     //fc
@@ -257,15 +262,9 @@ module attributes {llvm.data_layout = "e-m:e-p270:32:32-p271:32:32-p272:64:64-i6
     // ^bb0(%in: f32, %out: f32):
     //   linalg.yield %in : f32
     // } -> tensor<1x10xf32>
-    %27 = linalg.matmul ins(%collapsed, %transposed_110 : tensor<1x729xf32>, tensor<729x10xf32>) outs(%25 : tensor<1x10xf32>) -> tensor<1x10xf32>
 
-
-     %0 = tensor.empty() : tensor<256x256xf32>
-    %transposed = linalg.transpose ins(%cst : tensor<256x256xf32>) outs(%0 : tensor<256x256xf32>) permutation = [1, 0] 
-    %2 = tensor.empty() : tensor<5x256xf32>
-    // %2 = sparse_tensor.convert %0 : tensor<5x256xf32> to tensor<5x256xf32, #COO>
-    %3 = linalg.matmul ins(%arg0, %transposed : tensor<5x256xf32, #CSR>, tensor<256x256xf32>) outs(%2 : tensor<5x256xf32>) -> tensor<5x256xf32>
-
+    %pre27 = sparse_tensor.convert %collapsed : tensor<1x729xf32> to tensor<1x729xf32, #CSR>
+    %27 = linalg.matmul ins(%pre27, %transposed_110 : tensor<1x729xf32, #CSR>, tensor<729x10xf32>) outs(%25 : tensor<1x10xf32>) -> tensor<1x10xf32>
 
 
     return %27 : tensor<1x10xf32>
@@ -276,5 +275,82 @@ module attributes {llvm.data_layout = "e-m:e-p270:32:32-p271:32:32-p272:64:64-i6
   func.func @conv29(%arg0: tensor<1x1x29x29xf32>, %arg1: tensor<1x1x27x27xf32>) {
       return
   }
+
+  func.func @test_lif(%arg0_sparse: tensor<1x10xf32, #CSR>, %arg1_sparse: tensor<1x10xf32, #CSR>, %arg2: tensor<1x10xf32>) -> tensor<1x10xf32> {
+    %cst = arith.constant 9.900000e-01 : f32
+    %cst_2 = arith.constant 0.000000e+00 : f32
+    %cst_3 = arith.constant 1.000000e+00 : f32
+
+    %9 = linalg.generic {indexing_maps = [#map4, #map4, #map4], iterator_types = ["parallel", "parallel"]} ins(%arg0_sparse, %arg1_sparse : tensor<1x10xf32, #CSR>, tensor<1x10xf32, #CSR>) outs(%arg2 : tensor<1x10xf32>) {
+    ^bb0(%in: f32, %in_1: f32, %out: f32):
+      %5 = arith.mulf %in, %cst : f32
+      %6 = arith.addf %in_1, %5 : f32
+      %7 = arith.cmpf olt, %6, %cst_3 : f32
+      %8 = arith.select %7, %cst_2, %cst_3 : f32
+      linalg.yield %8 : f32
+    } -> tensor<1x10xf32>
+    return %9 : tensor<1x10xf32>
+  }
+
+
+  func.func @main() {
+    llvm.call @mgpuCreateSparseEnv(): () -> ()
+    %f0 = arith.constant 0.0 : f32
+    %f1 = arith.constant 1.0 : f32
+    %c0 = arith.constant 0 : index
+    %c2 = arith.constant 2 : index
+
+  %convin = tensor.generate {
+  ^bb0(%i: index, %j: index, %k: index, %l: index):
+    %sum1 = arith.addi %i, %j : index
+    %sum2 = arith.addi %k, %l : index
+    %sum = arith.addi %sum1, %sum2 : index
+
+    %c10 = arith.constant 10 : index
+    %c8 = arith.constant 8 : index
+    %mod = arith.remsi %sum, %c10 : index
+    %is_even = arith.cmpi slt, %mod, %c8 : index
+
+    %value = scf.if %is_even -> (f32) {
+      // %f0 = arith.constant 0.0 : f32
+      scf.yield %f0 : f32
+    } else {
+      %l64 = arith.index_cast %sum : index to i64
+      %f = arith.uitofp %l64 : i64 to f32
+      scf.yield %f : f32
+    }
+
+    tensor.yield %value : f32
+} : tensor<1x1x28x28xf32>
+
+    %C0 = tensor.generate {
+  ^bb0(%i: index, %j: index):
+    tensor.yield %f0 : f32
+  } : tensor<1x10xf32>
+
+
+    %B = tensor.generate {
+  ^bb0(%i: index, %j: index):
+    tensor.yield %f0 : f32
+  } : tensor<1x10xf32>
+
+  %Bcoo = sparse_tensor.convert %B : tensor<1x10xf32> to tensor<1x10xf32, #CSR>
+
+
+
+  %fcout = call @resnet(%convin) : (tensor<1x1x28x28xf32>) -> tensor<1x10xf32>
+
+  %Acoo = sparse_tensor.convert %fcout : tensor<1x10xf32> to tensor<1x10xf32, #CSR>
+
+  %res = call @test_lif(%Acoo, %Bcoo, %C0) : (tensor<1x10xf32, #CSR>,
+                                          tensor<1x10xf32, #CSR>,
+                                          tensor<1x10xf32>) -> tensor<1x10xf32>
+
+
+  llvm.call @mgpuDestroySparseEnv(): () -> ()
+
+    return
+  }
+
 }
 
