@@ -505,117 +505,73 @@ static void genLIFGPUCode(PatternRewriter &rewriter, gpu::GPUFuncOp gpuFunc,
     rewriter.setInsertionPointAfter(ifOp);
   }
   
-
-
-  // // 加载A矩阵行范围
-  // Value aStart = rewriter.create<memref::LoadOp>(loc, rowA, row);
-  // Value c1 = rewriter.create<arith::ConstantIndexOp>(loc, 1);
-  // Value nextRow = rewriter.create<arith::AddIOp>(loc, row, c1);
-  // Value aEnd = rewriter.create<memref::LoadOp>(loc, rowA, nextRow);
-  
-  // // 加载B矩阵行范围
-  // Value bStart = rewriter.create<memref::LoadOp>(loc, rowB, row);
-  // Value bEnd = rewriter.create<memref::LoadOp>(loc, rowB, nextRow);
-  
-  // // 创建列循环
-  // Value maxCol = rewriter.create<arith::MaxSIOp>(
-  //     loc, szkA, szkB);
-  
-  // Value zero = rewriter.create<arith::ConstantIndexOp>(loc, 0);
-  // Value one = rewriter.create<arith::ConstantIndexOp>(loc, 1);
-  // auto colLoop = rewriter.create<scf::ParallelOp>(
-  //     loc, zero, maxCol, one);
-  
-  // // 列循环体内
-  // rewriter.setInsertionPointToStart(colLoop.getBody());
-  // {
-  //   Value j = colLoop.getInductionVars()[0];
-  //   Value cst0 = rewriter.create<arith::ConstantFloatOp>(
-  //     loc, APFloat(0.0f), rewriter.getF32Type());
-  //   Value cst_099 = rewriter.create<arith::ConstantFloatOp>(
-  //     loc, APFloat(0.99f), rewriter.getF32Type());
-  //   // 处理A矩阵非零元素
-  //   // Value foundA = rewriter.create<scf::ForOp>(
-  //   //     loc, aStart, aEnd, one, ValueRange{cst0},
-  //   //     [&](OpBuilder &b, Location loc, Value iv, ValueRange args) {
-  //   //       Value aCol = b.create<memref::LoadOp>(loc, colA, iv);
-  //   //       Value cmp = b.create<arith::CmpIOp>(loc, arith::CmpIPredicate::eq, aCol, j);
-  //   //       auto ifres = b.create<scf::IfOp>(loc, cmp, 
-  //   //         [&](OpBuilder &b2, Location loc) {  
-  //   //           Value val = b.create<memref::LoadOp>(loc, valA, iv);
-  //   //           Value scaled = b.create<arith::MulFOp>(loc, val, cst_099);
-  //   //           b2.create<scf::YieldOp>(loc,scaled);
-  //   //         },
-  //   //         [&](OpBuilder &b2, Location loc) {  // else 分支
-  //   //           b2.create<scf::YieldOp>(loc, args[0]);
-  //   //         });
-  //   //       b.create<scf::YieldOp>(loc,ifres.getResult(0));  
-  //   //     }).getResult(0);
-
-  //   Value foundA = rewriter.create<scf::ForOp>(
-  //       loc, aStart, aEnd, one, ValueRange{cst0},
-  //       [&](OpBuilder &b, Location loc, Value iv, ValueRange args) {
-  //         Value aCol = b.create<memref::LoadOp>(loc, colA, iv);
-  //         Value cmp = b.create<arith::CmpIOp>(loc, arith::CmpIPredicate::eq, aCol, j);
-  //         auto ifres = b.create<scf::IfOp>(loc, cmp, 
-  //           [&](OpBuilder &b2, Location loc) {  
-  //             Value val = b2.create<memref::LoadOp>(loc, valA, iv);
-  //             Value scaled = b2.create<arith::MulFOp>(loc, val, cst_099);
-  //             // auto fmt = rewriter.getStringAttr("scal=%f\n");
-  //             // rewriter.create<gpu::PrintfOp>(loc, fmt, scaled);
-  //             b2.create<scf::YieldOp>(loc,scaled);
-  //           },
-  //           [&](OpBuilder &b2, Location loc) {  // else 分支
-  //             // auto fmt2 = rewriter.getStringAttr("arg0=%f\n");
-  //             // rewriter.create<gpu::PrintfOp>(loc, fmt2, args[0]);
-  //             b2.create<scf::YieldOp>(loc, args[0]);
-  //           });
-  //         b.create<scf::YieldOp>(loc,ifres.getResult(0));  
-  //       }).getResult(0);
-    
-  //   // 处理B矩阵非零元素
-  //   // Value foundB = rewriter.create<scf::ForOp>(
-  //   //     loc, bStart, bEnd, one, ValueRange{cst0},
-  //   //     [&](OpBuilder &b, Location loc, Value iv, ValueRange args) {
-  //   //       Value bCol = b.create<memref::LoadOp>(loc, colB, iv);
-  //   //       Value cmp = b.create<arith::CmpIOp>(loc, arith::CmpIPredicate::eq, bCol, j);
-  //   //       scf::IfOp ifOp = b.create<scf::IfOp>(loc, cmp, /*withElse=*/false);
-  //   //       b.setInsertionPointToStart(ifOp.thenBlock());
-  //   //       Value val = b.create<memref::LoadOp>(loc, valB, iv);
-  //   //       b.create<scf::YieldOp>(loc, val);
-  //   //       b.setInsertionPointAfter(ifOp);
-  //   //       b.create<scf::YieldOp>(loc, args[0]);
-  //   //     }).getResult(0);
-  //   Value foundB = rewriter.create<scf::ForOp>(
-  //     loc, bStart, bEnd, one, ValueRange{cst0},
-  //     [&](OpBuilder &b, Location loc, Value iv, ValueRange args) {
-  //       Value bCol = b.create<memref::LoadOp>(loc, colB, iv);
-  //       Value cmp = b.create<arith::CmpIOp>(loc, arith::CmpIPredicate::eq, bCol, j);
-  //       auto ifres = b.create<scf::IfOp>(loc, cmp, 
-  //         [&](OpBuilder &b2, Location loc) {  
-  //           Value val = b2.create<memref::LoadOp>(loc, valB, iv);
-  //           b2.create<scf::YieldOp>(loc,val);
-  //         },
-  //         [&](OpBuilder &b2, Location loc) {  // else 分支
-  //           b2.create<scf::YieldOp>(loc, args[0]);
-  //         });
-  //       b.create<scf::YieldOp>(loc,ifres.getResult(0));  
-  //     }).getResult(0);
-    
-  //   // LIF激活计算
-  //   Value sum = rewriter.create<arith::AddFOp>(loc, foundA, foundB);
-  //   Value condAct = rewriter.create<arith::CmpFOp>(
-  //       loc, arith::CmpFPredicate::OLT, sum, cst_1);
-  //   Value result = rewriter.create<arith::SelectOp>(loc, condAct, cst_0, cst_1);
-  //   // auto fmtAttr = rewriter.getStringAttr("result=%f\n");
-  //   // rewriter.create<gpu::PrintfOp>(loc, fmtAttr, result);
-    
-  //   // 写入结果矩阵
-  //   rewriter.create<memref::StoreOp>(loc, result, bufout, ValueRange{row, j});
-  // }
   rewriter.setInsertionPointToEnd(&block);
   rewriter.create<gpu::ReturnOp>(gpuFunc->getLoc());
 }
+
+
+/// Generate GPU code for 4D COO LIF
+static void genLIFGPUCode4D(PatternRewriter &rewriter,
+                            gpu::GPUFuncOp gpuFunc,
+                            Value nnz,
+                            SmallVectorImpl<Value> &scalars,
+                            SmallVectorImpl<Value> &buffers) {
+  Location loc = gpuFunc.getLoc();
+  Block &block = gpuFunc.getBody().front();
+  rewriter.setInsertionPointToStart(&block);
+
+  // Map arguments
+  unsigned arg = 0;
+  Value nnzArg = block.getArgument(arg++);
+  Value buf    = block.getArgument(arg++);
+  Value coordsA= block.getArgument(arg++);
+  Value valsA  = block.getArgument(arg++);
+  Value coordsB= block.getArgument(arg++);
+  Value valsB  = block.getArgument(arg++);
+
+  // Thread layout
+  auto idxTy = rewriter.getIndexType();
+  Value bid = rewriter.create<gpu::BlockIdOp>(loc, idxTy, gpu::Dimension::x);
+  Value tid = rewriter.create<gpu::ThreadIdOp>(loc, idxTy, gpu::Dimension::x);
+  Value bdim= rewriter.create<gpu::BlockDimOp>(loc, idxTy, gpu::Dimension::x);
+  Value gid = rewriter.create<arith::AddIOp>(loc,
+      rewriter.create<arith::MulIOp>(loc, bid, bdim), tid);
+
+  // Boundary check
+  Value cond = rewriter.create<arith::CmpIOp>(loc,
+      arith::CmpIPredicate::ult, gid, nnzArg);
+  auto ifOp = rewriter.create<scf::IfOp>(loc, TypeRange{}, cond, false);
+  {
+    OpBuilder::InsertionGuard guard(rewriter);
+    rewriter.setInsertionPointToStart(ifOp.thenBlock());
+
+    // Load coordsA[gid][d]
+    SmallVector<Value,4> idx{gid};
+    Value nA = rewriter.create<memref::LoadOp>(loc, coordsA, ValueRange{gid, rewriter.create<arith::ConstantIndexOp>(loc,0)});
+    Value cA = rewriter.create<memref::LoadOp>(loc, coordsA, ValueRange{gid, rewriter.create<arith::ConstantIndexOp>(loc,1)});
+    Value hA = rewriter.create<memref::LoadOp>(loc, coordsA, ValueRange{gid, rewriter.create<arith::ConstantIndexOp>(loc,2)});
+    Value wA = rewriter.create<memref::LoadOp>(loc, coordsA, ValueRange{gid, rewriter.create<arith::ConstantIndexOp>(loc,3)});
+    Value vA = rewriter.create<memref::LoadOp>(loc, valsA, gid);
+
+    // Load valsB (assumes same coordinate layout)
+    Value vB = rewriter.create<memref::LoadOp>(loc, valsB, gid);
+
+    // LIF Activation: sum = vA + vB; out = sum < 1.0 ? 0.0 : 1.0
+    Value sum = rewriter.create<arith::AddFOp>(loc, vA, vB);
+    Value c0  = rewriter.create<arith::ConstantFloatOp>(loc, APFloat(0.0f), rewriter.getF32Type());
+    Value c1  = rewriter.create<arith::ConstantFloatOp>(loc, APFloat(1.0f), rewriter.getF32Type());
+    Value cmp = rewriter.create<arith::CmpFOp>(loc, arith::CmpFPredicate::OLT, sum, c1);
+    Value out = rewriter.create<arith::SelectOp>(loc, cmp, c0, c1);
+
+    // Store output at buf[nA][cA][hA][wA]
+    rewriter.create<memref::StoreOp>(loc, out, buf,
+        ValueRange{nA, cA, hA, wA});
+  }
+  rewriter.setInsertionPointAfter(ifOp);
+  rewriter.create<gpu::ReturnOp>(loc);
+}
+
+
 
 /// Constructs code for new GPU kernel.
 static void genGPUCode(PatternRewriter &rewriter, gpu::GPUFuncOp gpuFunc,
