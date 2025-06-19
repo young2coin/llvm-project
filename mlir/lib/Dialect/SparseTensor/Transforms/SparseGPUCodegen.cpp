@@ -510,6 +510,41 @@ static void genLIFGPUCode(PatternRewriter &rewriter, gpu::GPUFuncOp gpuFunc,
 }
 
 
+
+/// Generate COO coords and values for a 4D tensor
+static SmallVector<Value> genCOO4D(OpBuilder &builder, Location loc, Value tensor) {
+  // Number of non-zero entries
+  Value nnz = builder.create<NumberOfEntriesOp>(loc, tensor);
+  // Create memref for coords: memref<nnz x 4>
+  auto idxTy = builder.getIndexType();
+  auto coordType = MemRefType::get({ShapedType::kDynamic, 4}, idxTy);
+  Value coords = builder.create<SparseTensorToCoordinatesOp>(loc, coordType, tensor);
+  // Extract values: memref<nnz>
+  Value vals = builder.create<ToValuesOp>(loc, tensor);
+
+  // Constants for SubView offsets and sizes
+  Value c0 = builder.create<arith::ConstantIndexOp>(loc, 0);
+  Value c1 = builder.create<arith::ConstantIndexOp>(loc, 1);
+  // SubView dim0: idxN
+  auto dimType = MemRefType::get({ShapedType::kDynamic, 1}, idxTy);
+  Value idxN = builder.create<memref::SubViewOp>(loc, dimType, coords,
+      SmallVector<Value>{c0, c0}, SmallVector<Value>{nnz, c1}, SmallVector<Value>{c1, c1});
+  // SubView dim1: idxC
+  Value idxC = builder.create<memref::SubViewOp>(loc, dimType, coords,
+      SmallVector<Value>{c0, c1}, SmallVector<Value>{nnz, c1}, SmallVector<Value>{c1, c1});
+  // SubView dim2: idxH
+  Value idxH = builder.create<memref::SubViewOp>(loc, dimType, coords,
+      SmallVector<Value>{c0, builder.create<arith::ConstantIndexOp>(loc, 2)},
+      SmallVector<Value>{nnz, c1}, SmallVector<Value>{c1, c1});
+  // SubView dim3: idxW
+  Value idxW = builder.create<memref::SubViewOp>(loc, dimType, coords,
+      SmallVector<Value>{c0, builder.create<arith::ConstantIndexOp>(loc, 3)},
+      SmallVector<Value>{nnz, c1}, SmallVector<Value>{c1, c1});
+
+  return {idxN, idxC, idxH, idxW, vals};
+}
+
+
 /// Generate GPU code for 4D COO LIF
 static void genLIFGPUCode4D(PatternRewriter &rewriter,
                             gpu::GPUFuncOp gpuFunc,
