@@ -680,7 +680,7 @@ static void genLIF4DGPUCode(PatternRewriter &rewriter, gpu::GPUFuncOp gpuFunc,
     Value cmp = b.create<arith::CmpFOp>(loc, arith::CmpFPredicate::OLT, sum, c1f);
     Value outVal = b.create<arith::SelectOp>(loc, cmp, c0f, c1f);
 
-    b.create<memref::StoreOp>(loc, outVal, out, ValueRange{flatRow});
+    b.create<memref::StoreOp>(loc, outVal, out, ValueRange{n, c, h, w});
     b.create<scf::YieldOp>(loc);
   });
 
