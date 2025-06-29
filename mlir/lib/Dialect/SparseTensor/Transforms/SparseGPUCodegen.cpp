@@ -22,6 +22,7 @@
 #include "mlir/Dialect/Linalg/Utils/Utils.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/Dialect/SparseTensor/IR/SparseTensor.h"
 #include "mlir/Dialect/SparseTensor/IR/SparseTensorType.h"
 #include "mlir/Dialect/SparseTensor/Transforms/Passes.h"
@@ -72,6 +73,15 @@ static gpu::GPUModuleOp genLIFGPUModule(OpBuilder &builder, ModuleOp topModule) 
                                           "sparse_lif_kernels");
 }
 
+static gpu::GPUModuleOp genLIF4DGPUModule(OpBuilder &builder, ModuleOp topModule) {
+  for (auto op : topModule.getBodyRegion().getOps<gpu::GPUModuleOp>())
+    return op; // existing
+  markAsGPUContainer(topModule);
+  builder.setInsertionPointToStart(&topModule.getBodyRegion().front());
+  return builder.create<gpu::GPUModuleOp>(topModule->getLoc(),
+                                          "sparse_lif_4D_kernels");
+}
+
 /// Constructs a lif GPU kernel in the given GPU module.
 static gpu::GPUFuncOp genLIFGPUFunc(OpBuilder &builder, gpu::GPUModuleOp gpuModule,
                                  SmallVectorImpl<Value> &args) {
@@ -88,6 +98,27 @@ static gpu::GPUFuncOp genLIFGPUFunc(OpBuilder &builder, gpu::GPUModuleOp gpuModu
   FunctionType type = FunctionType::get(gpuModule->getContext(), argsTp, {});
   auto gpuFunc =
       builder.create<gpu::GPUFuncOp>(gpuModule->getLoc(), "lif_kernel", type);
+  gpuFunc->setAttr(gpu::GPUDialect::getKernelFuncAttrName(),
+                   builder.getUnitAttr());
+  return gpuFunc;
+}
+
+/// Constructs a lif 4D GPU kernel in the given GPU module.
+static gpu::GPUFuncOp genLIF4DGPUFunc(OpBuilder &builder, gpu::GPUModuleOp gpuModule,
+                                 SmallVectorImpl<Value> &args) {
+  // SmallString<16> kernelName;
+  // do {
+  //   kernelName.clear();
+  //   ("lif_kernel").toStringRef(kernelName);
+  // } while (gpuModule.lookupSymbol(kernelName));
+  // Then we insert a new kernel with given arguments into the module.
+  builder.setInsertionPointToStart(&gpuModule.getBodyRegion().front());
+  SmallVector<Type> argsTp;
+  for (auto arg : args)
+    argsTp.push_back(arg.getType());
+  FunctionType type = FunctionType::get(gpuModule->getContext(), argsTp, {});
+  auto gpuFunc =
+      builder.create<gpu::GPUFuncOp>(gpuModule->getLoc(), "lif_4D_kernel", type);
   gpuFunc->setAttr(gpu::GPUDialect::getKernelFuncAttrName(),
                    builder.getUnitAttr());
   return gpuFunc;
@@ -511,100 +542,239 @@ static void genLIFGPUCode(PatternRewriter &rewriter, gpu::GPUFuncOp gpuFunc,
 
 
 
-/// Generate COO coords and values for a 4D tensor
-static SmallVector<Value> genCOO4D(OpBuilder &builder, Location loc, Value tensor) {
-  // Number of non-zero entries
-  Value nnz = builder.create<NumberOfEntriesOp>(loc, tensor);
-  // Create memref for coords: memref<nnz x 4>
-  auto idxTy = builder.getIndexType();
-  auto coordType = MemRefType::get({ShapedType::kDynamic, 4}, idxTy);
-  Value coords = builder.create<SparseTensorToCoordinatesOp>(loc, coordType, tensor);
-  // Extract values: memref<nnz>
-  Value vals = builder.create<ToValuesOp>(loc, tensor);
-
-  // Constants for SubView offsets and sizes
-  Value c0 = builder.create<arith::ConstantIndexOp>(loc, 0);
-  Value c1 = builder.create<arith::ConstantIndexOp>(loc, 1);
-  // SubView dim0: idxN
-  auto dimType = MemRefType::get({ShapedType::kDynamic, 1}, idxTy);
-  Value idxN = builder.create<memref::SubViewOp>(loc, dimType, coords,
-      SmallVector<Value>{c0, c0}, SmallVector<Value>{nnz, c1}, SmallVector<Value>{c1, c1});
-  // SubView dim1: idxC
-  Value idxC = builder.create<memref::SubViewOp>(loc, dimType, coords,
-      SmallVector<Value>{c0, c1}, SmallVector<Value>{nnz, c1}, SmallVector<Value>{c1, c1});
-  // SubView dim2: idxH
-  Value idxH = builder.create<memref::SubViewOp>(loc, dimType, coords,
-      SmallVector<Value>{c0, builder.create<arith::ConstantIndexOp>(loc, 2)},
-      SmallVector<Value>{nnz, c1}, SmallVector<Value>{c1, c1});
-  // SubView dim3: idxW
-  Value idxW = builder.create<memref::SubViewOp>(loc, dimType, coords,
-      SmallVector<Value>{c0, builder.create<arith::ConstantIndexOp>(loc, 3)},
-      SmallVector<Value>{nnz, c1}, SmallVector<Value>{c1, c1});
-
-  return {idxN, idxC, idxH, idxW, vals};
-}
-
-
-/// Generate GPU code for 4D COO LIF
-static void genLIFGPUCode4D(PatternRewriter &rewriter,
-                            gpu::GPUFuncOp gpuFunc,
-                            Value nnz,
+///generate lif gpu kernel 
+static void genLIF4DGPUCode(PatternRewriter &rewriter, gpu::GPUFuncOp gpuFunc,
+                            linalg::GenericOp op,
                             SmallVectorImpl<Value> &scalars,
                             SmallVectorImpl<Value> &buffers) {
   Location loc = gpuFunc.getLoc();
   Block &block = gpuFunc.getBody().front();
   rewriter.setInsertionPointToStart(&block);
 
-  // Map arguments
   unsigned arg = 0;
-  Value nnzArg = block.getArgument(arg++);
-  Value buf    = block.getArgument(arg++);
-  Value coordsA= block.getArgument(arg++);
-  Value valsA  = block.getArgument(arg++);
-  Value coordsB= block.getArgument(arg++);
-  Value valsB  = block.getArgument(arg++);
+  IRMapping irMap;
+  for (Value s : scalars)
+    irMap.map(s, block.getArgument(arg++));
+  for (Value b : buffers)
+    irMap.map(b, block.getArgument(arg++));
 
-  // Thread layout
-  auto idxTy = rewriter.getIndexType();
-  Value bid = rewriter.create<gpu::BlockIdOp>(loc, idxTy, gpu::Dimension::x);
-  Value tid = rewriter.create<gpu::ThreadIdOp>(loc, idxTy, gpu::Dimension::x);
-  Value bdim= rewriter.create<gpu::BlockDimOp>(loc, idxTy, gpu::Dimension::x);
-  Value gid = rewriter.create<arith::AddIOp>(loc,
-      rewriter.create<arith::MulIOp>(loc, bid, bdim), tid);
+  // Scalar arguments: N, C, H, W
+  Value szN = block.getArgument(0);
+  Value szC = block.getArgument(1);
+  Value szH = block.getArgument(2);
+  Value szW = block.getArgument(3);
 
-  // Boundary check
-  Value cond = rewriter.create<arith::CmpIOp>(loc,
-      arith::CmpIPredicate::ult, gid, nnzArg);
-  auto ifOp = rewriter.create<scf::IfOp>(loc, TypeRange{}, cond, false);
-  {
-    OpBuilder::InsertionGuard guard(rewriter);
-    rewriter.setInsertionPointToStart(ifOp.thenBlock());
+  // Buffers: [out], [iA, jA, kA, lA, valA], [iB, jB, kB, lB, valB]
+  Value out = block.getArgument(4);
+  Value iA = block.getArgument(5), jA = block.getArgument(6),
+        kA = block.getArgument(7), lA = block.getArgument(8),
+        valA = block.getArgument(9);
+  Value iB = block.getArgument(10), jB = block.getArgument(11),
+        kB = block.getArgument(12), lB = block.getArgument(13),
+        valB = block.getArgument(14);
 
-    // Load coordsA[gid][d]
-    SmallVector<Value,4> idx{gid};
-    Value nA = rewriter.create<memref::LoadOp>(loc, coordsA, ValueRange{gid, rewriter.create<arith::ConstantIndexOp>(loc,0)});
-    Value cA = rewriter.create<memref::LoadOp>(loc, coordsA, ValueRange{gid, rewriter.create<arith::ConstantIndexOp>(loc,1)});
-    Value hA = rewriter.create<memref::LoadOp>(loc, coordsA, ValueRange{gid, rewriter.create<arith::ConstantIndexOp>(loc,2)});
-    Value wA = rewriter.create<memref::LoadOp>(loc, coordsA, ValueRange{gid, rewriter.create<arith::ConstantIndexOp>(loc,3)});
-    Value vA = rewriter.create<memref::LoadOp>(loc, valsA, gid);
+  // Constants
+  Value c0f = rewriter.create<arith::ConstantFloatOp>(loc, APFloat(0.0f), rewriter.getF32Type());
+  Value c1f = rewriter.create<arith::ConstantFloatOp>(loc, APFloat(1.0f), rewriter.getF32Type());
+  Value decay = rewriter.create<arith::ConstantFloatOp>(loc, APFloat(0.99f), rewriter.getF32Type());
 
-    // Load valsB (assumes same coordinate layout)
-    Value vB = rewriter.create<memref::LoadOp>(loc, valsB, gid);
+  Value c0 = rewriter.create<arith::ConstantIndexOp>(loc, 0);
+  Value c1 = rewriter.create<arith::ConstantIndexOp>(loc, 1);
 
-    // LIF Activation: sum = vA + vB; out = sum < 1.0 ? 0.0 : 1.0
-    Value sum = rewriter.create<arith::AddFOp>(loc, vA, vB);
-    Value c0  = rewriter.create<arith::ConstantFloatOp>(loc, APFloat(0.0f), rewriter.getF32Type());
-    Value c1  = rewriter.create<arith::ConstantFloatOp>(loc, APFloat(1.0f), rewriter.getF32Type());
-    Value cmp = rewriter.create<arith::CmpFOp>(loc, arith::CmpFPredicate::OLT, sum, c1);
-    Value out = rewriter.create<arith::SelectOp>(loc, cmp, c0, c1);
+  // Launch index: blockIdx.x * blockDim.x + threadIdx.x → row
+  Value bid = rewriter.create<gpu::BlockIdOp>(loc, rewriter.getIndexType(), gpu::Dimension::x);
+  Value tid = rewriter.create<gpu::ThreadIdOp>(loc, rewriter.getIndexType(), gpu::Dimension::x);
+  Value bdim = rewriter.create<gpu::BlockDimOp>(loc, rewriter.getIndexType(), gpu::Dimension::x);
+  Value flatRow = rewriter.create<arith::AddIOp>(loc,
+                    rewriter.create<arith::MulIOp>(loc, bid, bdim), tid);
 
-    // Store output at buf[nA][cA][hA][wA]
-    rewriter.create<memref::StoreOp>(loc, out, buf,
-        ValueRange{nA, cA, hA, wA});
-  }
-  rewriter.setInsertionPointAfter(ifOp);
+  // Compute N*C*H
+  Value szCH = rewriter.create<arith::MulIOp>(loc, szC, szH);
+  Value szCHW = rewriter.create<arith::MulIOp>(loc, szCH, szW);
+
+  // Check bounds
+  Value inBounds = rewriter.create<arith::CmpIOp>(loc, arith::CmpIPredicate::ult, flatRow, 
+                                                  rewriter.create<arith::MulIOp>(loc, szN, szCHW));
+
+  rewriter.create<scf::IfOp>(loc, inBounds, [&](OpBuilder &b, Location loc) {
+    // row -> (n, c, h, w)
+    Value w = b.create<arith::RemUIOp>(loc, flatRow, szW);
+    Value tmp1 = b.create<arith::DivUIOp>(loc, flatRow, szW);
+
+    Value h = b.create<arith::RemUIOp>(loc, tmp1, szH);
+    Value tmp2 = b.create<arith::DivUIOp>(loc, tmp1, szH);
+
+    Value c = b.create<arith::RemUIOp>(loc, tmp2, szC);
+    Value n = b.create<arith::DivUIOp>(loc, tmp2, szC);
+
+    // 获取 valA.size == valB.size
+    Value aSize = b.create<memref::DimOp>(loc, valA, c0);
+
+    // reduce A
+    Value accA = b.create<scf::ForOp>(
+        loc, c0, aSize, c1, ValueRange{c0f},
+        [&](OpBuilder &b2, Location loc2, Value iv, ValueRange acc) {
+          // load index values
+          Value ii = b2.create<memref::LoadOp>(loc2, iA, iv);
+          Value jj = b2.create<memref::LoadOp>(loc2, jA, iv);
+          Value kk = b2.create<memref::LoadOp>(loc2, kA, iv);
+          Value ll = b2.create<memref::LoadOp>(loc2, lA, iv);
+
+          // compare
+          Value cmp0 = b2.create<arith::CmpIOp>(loc2, arith::CmpIPredicate::eq, ii, n);
+          Value cmp1 = b2.create<arith::CmpIOp>(loc2, arith::CmpIPredicate::eq, jj, c);
+          Value cmp2 = b2.create<arith::CmpIOp>(loc2, arith::CmpIPredicate::eq, kk, h);
+          Value cmp3 = b2.create<arith::CmpIOp>(loc2, arith::CmpIPredicate::eq, ll, w);
+
+          Value and01 = b2.create<arith::AndIOp>(loc2, cmp0, cmp1);
+          Value and23 = b2.create<arith::AndIOp>(loc2, cmp2, cmp3);
+          Value match = b2.create<arith::AndIOp>(loc2, and01, and23);
+
+          b2.create<scf::IfOp>(
+              loc2, match,
+              [&](OpBuilder &thenB, Location thenLoc) {
+                Value v = thenB.create<memref::LoadOp>(thenLoc, valA, iv);
+                Value scaled = thenB.create<arith::MulFOp>(thenLoc, v, decay);
+                thenB.create<scf::YieldOp>(thenLoc, scaled);
+              },
+              [&](OpBuilder &elseB, Location elseLoc) {
+                elseB.create<scf::YieldOp>(elseLoc, acc[0]);
+              });
+
+          b2.create<scf::YieldOp>(loc2, acc[0]);
+        }).getResult(0);
+
+    // reduce B
+    Value accB = b.create<scf::ForOp>(
+        loc, c0, aSize, c1, ValueRange{c0f},
+        [&](OpBuilder &b2, Location loc2, Value iv, ValueRange acc) {
+          Value ii = b2.create<memref::LoadOp>(loc2, iB, iv);
+          Value jj = b2.create<memref::LoadOp>(loc2, jB, iv);
+          Value kk = b2.create<memref::LoadOp>(loc2, kB, iv);
+          Value ll = b2.create<memref::LoadOp>(loc2, lB, iv);
+
+          Value cmp0 = b2.create<arith::CmpIOp>(loc2, arith::CmpIPredicate::eq, ii, n);
+          Value cmp1 = b2.create<arith::CmpIOp>(loc2, arith::CmpIPredicate::eq, jj, c);
+          Value cmp2 = b2.create<arith::CmpIOp>(loc2, arith::CmpIPredicate::eq, kk, h);
+          Value cmp3 = b2.create<arith::CmpIOp>(loc2, arith::CmpIPredicate::eq, ll, w);
+
+          Value and01 = b2.create<arith::AndIOp>(loc2, cmp0, cmp1);
+          Value and23 = b2.create<arith::AndIOp>(loc2, cmp2, cmp3);
+          Value match = b2.create<arith::AndIOp>(loc2, and01, and23);
+
+          b2.create<scf::IfOp>(
+              loc2, match,
+              [&](OpBuilder &thenB, Location thenLoc) {
+                Value v = thenB.create<memref::LoadOp>(thenLoc, valB, iv);
+                thenB.create<scf::YieldOp>(thenLoc, v);
+              },
+              [&](OpBuilder &elseB, Location elseLoc) {
+                elseB.create<scf::YieldOp>(elseLoc, acc[0]);
+              });
+
+          b2.create<scf::YieldOp>(loc2, acc[0]);
+        }).getResult(0);
+
+    // Output decision
+    Value sum = b.create<arith::AddFOp>(loc, accA, accB);
+    Value cmp = b.create<arith::CmpFOp>(loc, arith::CmpFPredicate::OLT, sum, c1f);
+    Value outVal = b.create<arith::SelectOp>(loc, cmp, c0f, c1f);
+
+    b.create<memref::StoreOp>(loc, outVal, out, ValueRange{flatRow});
+    b.create<scf::YieldOp>(loc);
+  });
+
+  rewriter.setInsertionPointToEnd(&block);
   rewriter.create<gpu::ReturnOp>(loc);
 }
+
+
+
+
+
+
+/// Generate COO coords and values for a 4D tensor
+static SmallVector<Value> genCOO4D(OpBuilder &builder, Location loc, Value tensor) {
+  auto tensorType = tensor.getType().cast<RankedTensorType>();
+  int64_t N = tensorType.getShape()[0];
+  int64_t C = tensorType.getShape()[1];
+  int64_t H = tensorType.getShape()[2];
+  int64_t W = tensorType.getShape()[3];
+
+  auto idxTy = builder.getIndexType();
+  auto elemTy = tensorType.getElementType();
+
+  int64_t maxNNZ = N * C * H * W;
+  Value cMaxNNZ = builder.create<arith::ConstantIndexOp>(loc, maxNNZ);
+
+  auto coordTy = MemRefType::get({maxNNZ}, idxTy);
+  auto valTy = MemRefType::get({maxNNZ}, elemTy);
+  Value memN = builder.create<memref::AllocOp>(loc, coordTy);
+  Value memC = builder.create<memref::AllocOp>(loc, coordTy);
+  Value memH = builder.create<memref::AllocOp>(loc, coordTy);
+  Value memW = builder.create<memref::AllocOp>(loc, coordTy);
+  Value memVals = builder.create<memref::AllocOp>(loc, valTy);
+
+  Value zero = builder.create<arith::ConstantIndexOp>(loc, 0);
+  Value one = builder.create<arith::ConstantIndexOp>(loc, 1);
+
+  // N-dim loop
+  Value finalNNZ = builder
+    .create<scf::ForOp>(loc, zero, builder.create<arith::ConstantIndexOp>(loc, N), one, ValueRange{zero},
+    [&](OpBuilder &bN, Location lN, Value ivN, ValueRange argsN) {
+      Value nnzN = argsN[0];
+
+      // C-dim loop
+      auto forC = bN.create<scf::ForOp>(lN, zero, builder.create<arith::ConstantIndexOp>(lN, C), one, ValueRange{nnzN},
+      [&](OpBuilder &bC, Location lC, Value ivC, ValueRange argsC) {
+        Value nnzC = argsC[0];
+
+        // H-dim loop
+        auto forH = bC.create<scf::ForOp>(lC, zero, builder.create<arith::ConstantIndexOp>(lC, H), one, ValueRange{nnzC},
+        [&](OpBuilder &bH, Location lH, Value ivH, ValueRange argsH) {
+          Value nnzH = argsH[0];
+
+          // W-dim loop
+          auto forW = bH.create<scf::ForOp>(lH, zero, builder.create<arith::ConstantIndexOp>(lH, W), one, ValueRange{nnzH},
+          [&](OpBuilder &bW, Location lW, Value ivW, ValueRange argsW) {
+            Value nnzCounter = argsW[0];
+
+            // Value val = bW.create<tensor::ExtractOp>(lW, tensor, ValueRange{ivN, ivC, ivH, ivW});
+            Value val = bW.create<tensor::ExtractOp>(lW, tensor, ValueRange{ivN, ivC, ivH, ivW});
+            Value zeroVal = bW.create<arith::ConstantOp>(lW, elemTy, bW.getZeroAttr(elemTy));
+            Value isNonZero = bW.create<arith::CmpFOp>(lW, arith::CmpFPredicate::UNE, val, zeroVal);
+
+            auto ifOp = bW.create<scf::IfOp>(
+              lW,  isNonZero,
+              [&](OpBuilder &thenBuilder, Location thenLoc) {
+                thenBuilder.create<memref::StoreOp>(thenLoc, ivN, memN, nnzCounter);
+                thenBuilder.create<memref::StoreOp>(thenLoc, ivC, memC, nnzCounter);
+                thenBuilder.create<memref::StoreOp>(thenLoc, ivH, memH, nnzCounter);
+                thenBuilder.create<memref::StoreOp>(thenLoc, ivW, memW, nnzCounter);
+                thenBuilder.create<memref::StoreOp>(thenLoc, val, memVals, nnzCounter);
+                Value newCounter = thenBuilder.create<arith::AddIOp>(thenLoc, nnzCounter, one);
+                thenBuilder.create<scf::YieldOp>(thenLoc, newCounter);
+              },
+              [&](OpBuilder &elseBuilder, Location elseLoc) {
+                elseBuilder.create<scf::YieldOp>(elseLoc, nnzCounter);
+              }
+            );
+
+            bW.create<scf::YieldOp>(lW, ifOp.getResult(0));
+          });
+
+          bH.create<scf::YieldOp>(lH, forW.getResult(0));
+        });
+
+        bC.create<scf::YieldOp>(lC, forH.getResult(0));
+      });
+
+      bN.create<scf::YieldOp>(lN, forC.getResult(0));
+    }).getResult(0); // Final nnzCounter
+
+  return {memN, memC, memH, memW, memVals};
+}
+
 
 
 
@@ -923,238 +1093,6 @@ static Operation *genSpMat(OpBuilder &builder, Location loc,
                                           valA);
 }
 
-///match LIF kernel
-// static LogicalResult rewriteLIF(PatternRewriter &rewriter,
-//                                linalg::GenericOp op, bool enableRT) {
-//   Location loc = op.getLoc();
-//   Value A = op.getOperand(0);
-//   Value B = op.getOperand(1);
-//   Value output = op.getOperand(2);
-//   SmallVector<Value> tokens;
-
-//   // 验证稀疏输入和密集输出
-//   SparseTensorType aTp = getSparseTensorType(A);
-//   SparseTensorType bTp = getSparseTensorType(B);
-//   SparseTensorType cTp = getSparseTensorType(output);
-//   auto format = getCuSparseFormat2(aTp, bTp, cTp, enableRT, /*isMatVec=*/false);
-//   // auto format = CuSparseFormat::kCOO;
-//   if (format == CuSparseFormat::kNone || format == CuSparseFormat::kBSR)
-//     return failure();
-
-  
-//   //cpu->GPU
-//   // Start sparse kernel and copy data from host to device.
-//   //   a : memR/memC/memV -> rowA,colA,valA
-//   //   b : bufB           -> matB
-//   Value nseA = rewriter.create<NumberOfEntriesOp>(loc, A);
-//   Value szmA = linalg::createOrFoldDimOp(rewriter, loc, A, 0);
-//   Value szkA = linalg::createOrFoldDimOp(rewriter, loc, A, 1);
-
-//   Value nseB = rewriter.create<NumberOfEntriesOp>(loc, B);
-//   Value szmB = linalg::createOrFoldDimOp(rewriter, loc, B, 0);  
-//   Value szkB = linalg::createOrFoldDimOp(rewriter, loc, B, 1);  
-
-
-  
-
-//   // 提取稀疏元数据
-//   Value memRA = genFirstPosOrCrds(rewriter, loc, A, format, enableRT);
-//   Value memCA = genSecondCrds(rewriter, loc, A, format, enableRT); // or empty
-//   Value memVA = rewriter.create<ToValuesOp>(loc, A);
-//   Value rowA = genAllocCopy(rewriter, loc, memRA, tokens);
-//   Value colA = memCA ? genAllocCopy(rewriter, loc, memCA, tokens) : Value();
-//   Value valA = genAllocCopy(rewriter, loc, memVA, tokens);
-   
-  
-//   Value memRB = genFirstPosOrCrds(rewriter, loc, B, format, enableRT);
-//   Value memCB = genSecondCrds(rewriter, loc, B, format, enableRT); // or empty
-//   Value memVB = rewriter.create<ToValuesOp>(loc, B);
-//   Value rowB = genAllocCopy(rewriter, loc, memRB, tokens);
-//   Value colB = memCB ? genAllocCopy(rewriter, loc, memCB, tokens) : Value();
-//   Value valB = genAllocCopy(rewriter, loc, memVB, tokens);
-
-
-//   Value bufout = genTensorToMemref(rewriter, loc, output);
-//   Value matB = genAllocCopy(rewriter, loc, bufout, tokens);
-//   genBlockingWait(rewriter, loc, tokens);
-//   tokens.clear();
-
-//   // Create sparse environment and sparse matrix/dense matrix handles.
-//   Type indexTp = rewriter.getIndexType();
-//   Type dnTensorHandleTp = rewriter.getType<gpu::SparseDnTensorHandleType>();
-//   Type spMatHandleTp = rewriter.getType<gpu::SparseSpMatHandleType>();
-//   Type tokenTp = rewriter.getType<gpu::AsyncTokenType>();
-//   Value token = genFirstWait(rewriter, loc);
-                              
-//   Operation *spGenA =
-//     genSpMat(rewriter, loc, aTp, spMatHandleTp, tokenTp, token, szmA, szkB,
-//              nseA, rowA, colA, valA, format, enableRT);
-//   Operation *spGenB =
-//     genSpMat(rewriter, loc, bTp, spMatHandleTp, tokenTp, token, szmB, szkB,
-//              nseB, rowB, colB, valB, format, enableRT);                            
-
-
-
-//   // 内核配置参数
-//   Value gridSize = rewriter.create<arith::ConstantIndexOp>(loc, 512);
-//   Value gridSizey = rewriter.create<arith::ConstantIndexOp>(loc, 1);
-//   Value gridSizez = rewriter.create<arith::ConstantIndexOp>(loc, 1);
-//   Value blockSize = rewriter.create<arith::ConstantIndexOp>(loc, 256);
-//   Value blockSizey = rewriter.create<arith::ConstantIndexOp>(loc, 1);
-//   Value blockSizez = rewriter.create<arith::ConstantIndexOp>(loc, 1);
-  
-//   // 获取常量值
-
-//   Value cst_0 = rewriter.create<arith::ConstantFloatOp>(
-//       loc, APFloat(0.0f), rewriter.getF32Type());
-//   Value cst_1 = rewriter.create<arith::ConstantFloatOp>(
-//       loc, APFloat(1.0f), rewriter.getF32Type());
-
-//   ModuleOp topModule = op->getParentOfType<ModuleOp>();
-//   auto gpuModule = genLIFGPUModule(rewriter, topModule);
-
-//   SmallVector<Type> kernelArgTypes = {
-//     rowA.getType(), colA.getType(), valA.getType(),
-//     rowB.getType(), colB.getType(), valB.getType(),
-//     matB.getType()
-// };
-//   rewriter.setInsertionPointToStart(&gpuModule.getBodyRegion().front());
-//   auto kernelFunc = rewriter.create<gpu::GPUFuncOp>(
-//     gpuModule->getLoc(), "lif_kernel",
-//     FunctionType::get(gpuModule->getContext(), kernelArgTypes, {}));
-//   // kernelFunc->setAttr(gpu::GPUDialect::getKernelFuncAttrName(),
-//   //   rewriter.getUnitAttr());
-//   kernelFunc->setAttr("sym_name", rewriter.getStringAttr("lif_kernel"));
-
-//   Block &block = kernelFunc.getBody().front();
-//   Location Funcloc = kernelFunc->getLoc();
-//   rewriter.setInsertionPointToStart(&block);
-
-  
-//   // 获取线程和块索引
-//   Value bid = rewriter.create<gpu::BlockIdOp>(Funcloc, rewriter.getIndexType(), gpu::Dimension::x);
-//   Value tid = rewriter.create<gpu::ThreadIdOp>(Funcloc, rewriter.getIndexType(), gpu::Dimension::x);
-//   Value bdim = rewriter.create<gpu::BlockDimOp>(Funcloc, rewriter.getIndexType(), gpu::Dimension::x);
-  
-//   // 计算全局行索引
-//   Value row = rewriter.create<arith::AddIOp>(
-//     Funcloc,
-//       rewriter.create<arith::MulIOp>(Funcloc, bid, bdim),
-//       tid);
-  
-//   // 边界检查
-//   // Value cond = rewriter.create<arith::CmpIOp>(
-//   //   Funcloc, arith::CmpIPredicate::ult, row, szmA);
-  
-//   // rewriter.create<scf::IfOp>(Funcloc, cond, [&](OpBuilder &builder, Location loc) {
-//     // 加载A矩阵行范围
-//     Value aStart = rewriter.create<memref::LoadOp>(loc, rowA, row);
-//     Value c1 = rewriter.create<arith::ConstantIndexOp>(loc, 1);
-//     Value nextRow = rewriter.create<arith::AddIOp>(loc, row, c1);
-//     Value aEnd = rewriter.create<memref::LoadOp>(loc, rowA, nextRow);
-    
-//     // 加载B矩阵行范围
-//     Value bStart = rewriter.create<memref::LoadOp>(loc, rowB, row);
-//     Value bEnd = rewriter.create<memref::LoadOp>(loc, rowB, nextRow);
-    
-//     // 创建列循环
-//     Value maxCol = rewriter.create<arith::MaxSIOp>(
-//         loc, szkA, szkB);
-    
-//     Value zero = rewriter.create<arith::ConstantIndexOp>(loc, 0);
-//     Value one = rewriter.create<arith::ConstantIndexOp>(loc, 1);
-//     auto colLoop = rewriter.create<scf::ParallelOp>(
-//         loc, zero, maxCol, one);
-    
-//     // 列循环体内
-//     rewriter.setInsertionPointToStart(colLoop.getBody());
-//     {
-//       Value j = colLoop.getInductionVars()[0];
-//       Value cst0 = rewriter.create<arith::ConstantFloatOp>(
-//         loc, APFloat(0.0f), rewriter.getF32Type());
-//       Value cst_099 = rewriter.create<arith::ConstantFloatOp>(
-//         loc, APFloat(0.99f), rewriter.getF32Type());
-//       // 处理A矩阵非零元素
-//       Value foundA = rewriter.create<scf::ForOp>(
-//           loc, aStart, aEnd, one, ValueRange{cst0},
-//           [&](OpBuilder &b, Location loc, Value iv, ValueRange args) {
-//             Value aCol = b.create<memref::LoadOp>(loc, colA, iv);
-//             Value cmp = b.create<arith::CmpIOp>(loc, arith::CmpIPredicate::eq, aCol, j);
-//             auto ifres = b.create<scf::IfOp>(loc, cmp, 
-//               [&](OpBuilder &b2, Location loc) {  
-//                 Value val = b.create<memref::LoadOp>(loc, valA, iv);
-//                 Value scaled = b.create<arith::MulFOp>(loc, val, cst_099);
-//                 b2.create<scf::YieldOp>(loc,scaled);
-//               },
-//               [&](OpBuilder &b2, Location loc) {  // else 分支
-//                 b2.create<scf::YieldOp>(loc, args[0]);
-//               });
-//             b.create<scf::YieldOp>(loc,ifres.getResult(0));  
-//           }).getResult(0);
-      
-//       // 处理B矩阵非零元素
-//       Value foundB = rewriter.create<scf::ForOp>(
-//           loc, bStart, bEnd, one, ValueRange{cst0},
-//           [&](OpBuilder &b, Location loc, Value iv, ValueRange args) {
-//             Value bCol = b.create<memref::LoadOp>(loc, colB, iv);
-//             Value cmp = b.create<arith::CmpIOp>(loc, arith::CmpIPredicate::eq, bCol, j);
-//             scf::IfOp ifOp = b.create<scf::IfOp>(loc, cmp, /*withElse=*/false);
-//             b.setInsertionPointToStart(ifOp.thenBlock());
-//             Value val = b.create<memref::LoadOp>(loc, valB, iv);
-//             b.create<scf::YieldOp>(loc, val);
-//             b.setInsertionPointAfter(ifOp);
-//             b.create<scf::YieldOp>(loc, args[0]);
-//           }).getResult(0);
-      
-//       // LIF激活计算
-//       Value sum = rewriter.create<arith::AddFOp>(loc, foundA, foundB);
-//       Value condAct = rewriter.create<arith::CmpFOp>(
-//           loc, arith::CmpFPredicate::OLT, sum, cst_1);
-//       Value result = rewriter.create<arith::SelectOp>(loc, condAct, cst_0, cst_1);
-      
-//       // 写入结果矩阵
-//       rewriter.create<memref::StoreOp>(loc, result, matB, ValueRange{row, j});
-      
-//       rewriter.create<scf::YieldOp>(loc);
-//     }
-    
-//     rewriter.create<scf::YieldOp>(loc);
-//   // });
-//   rewriter.create<gpu::ReturnOp>(kernelFunc->getLoc());
-
-//   gpu::KernelDim3 gridSizesum = {gridSize, gridSizey, gridSizez};
-//   gpu::KernelDim3 blckSizesum = {blockSize, blockSizey, blockSizez};
-//   Value none = TypedValue<::mlir::IntegerType>{};
-
-//   auto launchOp = rewriter.create<gpu::LaunchFuncOp>(
-//     loc,
-//     kernelFunc,
-//     gridSizesum, blckSizesum,
-//     /*dynSharedMemSz*/ none,
-//     ValueRange{rowA, colA, valA, rowB, colB, valB, matB},
-//     tokenTp,
-//     tokens
-// );
-
-//   // 后续资源回收与同步逻辑（与前面SpMV实现相同）
-//   rewriter.setInsertionPointAfter(launchOp);
-//   token = launchOp.getAsyncToken();
-//   token = genDeallocMemRef(rewriter, loc, rowA, token);
-//   token = genDeallocMemRef(rewriter, loc, colA, token);
-//   token = genDeallocMemRef(rewriter, loc, valA, token);
-//   token = genDeallocMemRef(rewriter, loc, rowB, token);
-//   token = genDeallocMemRef(rewriter, loc, colB, token);
-//   token = genDeallocMemRef(rewriter, loc, valB, token);
-//   token = genCopyMemRef(rewriter, loc, bufout, matB, token);
-//   token = genDeallocMemRef(rewriter, loc, matB, token);
-//   tokens.push_back(token);
-//   genBlockingWait(rewriter, loc, tokens);
-
-//   rewriter.replaceOpWithNewOp<bufferization::ToTensorOp>(op, bufout);
-  
-//   return success();
-// }
-
 
 
 ///match LIF kernel
@@ -1244,92 +1182,85 @@ static LogicalResult rewriteLIF(PatternRewriter &rewriter,
   return success();
   }
 
- ///match LIF kernel
+
+/// match 4D LIF kernel
 static LogicalResult rewriteLIF4D(PatternRewriter &rewriter,
-                                linalg::GenericOp op, bool enableRT) {
+                                  linalg::GenericOp op, bool enableRT) {
   Location loc = op.getLoc();
   Value A = op.getOperand(0);
   Value B = op.getOperand(1);
   Value output = op.getOperand(2);
   SmallVector<Value> tokens;
 
-  // 验证稀疏输入和密集输出
-  SparseTensorType aTp = getSparseTensorType(A);
-  SparseTensorType bTp = getSparseTensorType(B);
-  SparseTensorType cTp = getSparseTensorType(output);
-  auto format = getCuSparseFormat2(aTp, bTp, cTp, enableRT, /*isMatVec=*/false);
-  // auto format = CuSparseFormat::kCOO;
-  if (format == CuSparseFormat::kNone || format == CuSparseFormat::kBSR)
+  // 提取输出 tensor 的 memref
+  Value bufOut = genTensorToMemref(rewriter, loc, output);
+
+  // 提取稀疏 COO 信息（返回 5 个值：i, j, k, l, val）
+  auto cooA = genCOO4D(rewriter, loc, A); // iA, jA, kA, lA, valA
+  auto cooB = genCOO4D(rewriter, loc, B); // iB, jB, kB, lB, valB
+  if (cooA.size() != 5 || cooB.size() != 5)
     return failure();
 
-  
-  //cpu->GPU
-  // Start sparse kernel and copy data from host to device.
-  //   a : memR/memC/memV -> rowA,colA,valA
-  //   b : bufB           -> matB
-  Value nseA = rewriter.create<NumberOfEntriesOp>(loc, A);
-  Value szmA = linalg::createOrFoldDimOp(rewriter, loc, A, 0);
-  Value szkA = linalg::createOrFoldDimOp(rewriter, loc, A, 1);
+  Value iA = cooA[0], jA = cooA[1], kA = cooA[2], lA = cooA[3], valA = cooA[4];
+  Value iB = cooB[0], jB = cooB[1], kB = cooB[2], lB = cooB[3], valB = cooB[4];
 
-  Value nseB = rewriter.create<NumberOfEntriesOp>(loc, B);
-  Value szmB = linalg::createOrFoldDimOp(rewriter, loc, B, 0);  
-  Value szkB = linalg::createOrFoldDimOp(rewriter, loc, B, 1);  
-
-
-  
-
-  // 提取稀疏元数据
-  Value memRA = genFirstPosOrCrds(rewriter, loc, A, format, enableRT);
-  Value memCA = genSecondCrds(rewriter, loc, A, format, enableRT); // or empty
-  Value memVA = rewriter.create<ToValuesOp>(loc, A);    
-
-  Value memRB = genFirstPosOrCrds(rewriter, loc, B, format, enableRT);
-  Value memCB = genSecondCrds(rewriter, loc, B, format, enableRT); // or empty
-  Value memVB = rewriter.create<ToValuesOp>(loc, B);
-
-  Value bufout = genTensorToMemref(rewriter, loc, output);
+  // 获取输出尺寸（默认从 A 复制）
+  Value szN = linalg::createOrFoldDimOp(rewriter, loc, A, 0);
+  Value szC = linalg::createOrFoldDimOp(rewriter, loc, A, 1);
+  Value szH = linalg::createOrFoldDimOp(rewriter, loc, A, 2);
+  Value szW = linalg::createOrFoldDimOp(rewriter, loc, A, 3);
 
   SmallVector<Value> scalars;
   SmallVector<Value> buffers;
 
-  scalars.push_back(szmA);
-  scalars.push_back(szkA);
+  scalars.push_back(szN);
+  scalars.push_back(szC);
+  scalars.push_back(szH);
+  scalars.push_back(szW);
 
-  scalars.push_back(szmB);
-  scalars.push_back(szkB);
+  buffers.push_back(bufOut);
 
-  buffers.push_back(bufout);
-  buffers.push_back(memRA);
-  buffers.push_back(memCA);
-  buffers.push_back(memVA);
+  // A 的 4D 坐标和值
+  buffers.push_back(iA);
+  buffers.push_back(jA);
+  buffers.push_back(kA);
+  buffers.push_back(lA);
+  buffers.push_back(valA);
 
-  buffers.push_back(memRB);
-  buffers.push_back(memCB);
-  buffers.push_back(memVB);
+  // B 的 4D 坐标和值
+  buffers.push_back(iB);
+  buffers.push_back(jB);
+  buffers.push_back(kB);
+  buffers.push_back(lB);
+  buffers.push_back(valB);
 
+  // 准备 device-side 参数
   SmallVector<Value> args;
   Value out = genParametersIn(rewriter, loc, scalars, buffers, args, tokens,
-    /*useHostRegistrationForOut=*/false);
-  // Set up GPU module and construct GPU function.
+                              /*useHostRegistrationForOut=*/false);
+
+  // 生成 GPU 模块和函数
   auto saveIp = rewriter.saveInsertionPoint();
   ModuleOp topModule = op->getParentOfType<ModuleOp>();
-  auto gpuModule = genLIFGPUModule(rewriter, topModule);
-
-  auto gpuFunc = genLIFGPUFunc(rewriter, gpuModule, args);
-
-  genLIFGPUCode(rewriter, gpuFunc, op, scalars, buffers);
+  auto gpuModule = genLIF4DGPUModule(rewriter, topModule);
+  auto gpuFunc = genLIF4DGPUFunc(rewriter, gpuModule, args);
+  genLIF4DGPUCode(rewriter, gpuFunc, op, scalars, buffers);
   rewriter.restoreInsertionPoint(saveIp);
+
+  // 启动 kernel
   genBlockingWait(rewriter, loc, tokens);
   tokens.clear();
-  Value kernelToken =
-    genLaunchLIFGPUFunc(rewriter, gpuFunc, szmA, args, tokens);
+  Value kernelToken = genLaunchLIFGPUFunc(rewriter, gpuFunc, szN, args, tokens); // szN can be used for block count
 
-  genParametersOut(rewriter, loc, out, kernelToken, scalars, buffers, args,
-                     tokens);
+  // 拷贝输出结果回主机
+  genParametersOut(rewriter, loc, out, kernelToken, scalars, buffers, args, tokens);
   genBlockingWait(rewriter, loc, tokens);
-  rewriter.replaceOpWithNewOp<bufferization::ToTensorOp>(op, bufout);
+
+  // 替换原始 linalg.generic 操作
+  rewriter.replaceOpWithNewOp<bufferization::ToTensorOp>(op, bufOut);
   return success();
-  } 
+}
+ 
 
 
 /// Match and rewrite SpMV kernel.
@@ -2077,7 +2008,7 @@ struct LinalgOpRewriter : public OpRewritePattern<linalg::GenericOp> {
       return rewriteSDDMM(rewriter, op, enableRT);
     }
     else
-      return rewriteLIF(rewriter, op, enableRT);
+      return rewriteLIF4D(rewriter, op, enableRT);
 
     //recognize a lif
   //   if (numTensors == 2 &&
