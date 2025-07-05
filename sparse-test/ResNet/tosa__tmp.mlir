@@ -104,11 +104,15 @@ module attributes {llvm.data_layout = "e-m:e-p270:32:32-p271:32:32-p272:64:64-i6
     %c29_69 = arith.constant 29 : index
     %c26_70 = arith.constant 26 : index
     %c27_71 = arith.constant 27 : index
+
+    
     %24 = "tosa.const"() <{value = dense<[0, 2, 3, 1]> : tensor<4xi32>}> : () -> tensor<4xi32>
     %25 = tosa.transpose %23, %24 : (tensor<1x1x27x27xf32>, tensor<4xi32>) -> tensor<1x27x27x1xf32>
     %26 = "tosa.const"() <{value = dense<[0, 2, 3, 1]> : tensor<4xi32>}> : () -> tensor<4xi32>
     %27 = tosa.transpose %5, %26 : (tensor<1x1x3x3xf32>, tensor<4xi32>) -> tensor<1x3x3x1xf32>
     %28 = tosa.conv2d %25, %27, %6 {dilation = array<i64: 1, 1>, pad = array<i64: 1, 1, 1, 1>, stride = array<i64: 1, 1>} : (tensor<1x27x27x1xf32>, tensor<1x3x3x1xf32>, tensor<1xf32>) -> tensor<1x27x27x1xf32>
+
+
     %29 = "tosa.const"() <{value = dense<[0, 3, 1, 2]> : tensor<4xi32>}> : () -> tensor<4xi32>
     %30 = tosa.transpose %28, %29 : (tensor<1x27x27x1xf32>, tensor<4xi32>) -> tensor<1x1x27x27xf32>
     %c1_72 = arith.constant 1 : index
