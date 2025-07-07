@@ -45,11 +45,5 @@ module attributes {llvm.data_layout = "e-m:e-p270:32:32-p271:32:32-p272:64:64-i6
     %transposed_23 = linalg.transpose ins(%4 : tensor<1x27x27x1xf32>) outs(%5 : tensor<1x1x27x27xf32>) permutation = [0, 3, 1, 2] 
     return %transposed_23 : tensor<1x1x27x27xf32>
   }
-  func.func @main() -> i32 {
-    %0 = tensor.empty() : tensor<1x1x28x28xf32>
-    %1 = call @main_graph(%0) : (tensor<1x1x28x28xf32>) -> tensor<1x1x27x27xf32>
-    %c0_i32 = arith.constant 0 : i32
-    return %c0_i32 : i32
-  }
 }
 

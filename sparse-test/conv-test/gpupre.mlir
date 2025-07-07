@@ -76,6 +76,7 @@ module attributes {gpu.container_module, llvm.data_layout = "e-m:e-p270:32:32-p2
     gpu.wait [%24, %26, %28, %30, %32, %34]
     return
   }
+  
   gpu.module @conv_kernel {
     gpu.func @conv_kernel(%arg0: index, %arg1: index, %arg2: f32, %arg3: memref<1x1x1x1xf32>, %arg4: memref<1x1x28x28xf32>, %arg5: index, %arg6: index, %arg7: memref<1x1x1x1xf32>, %arg8: memref<1x1x2x2xf32>, %arg9: index, %arg10: index, %arg11: memref<1x1x1x1xf32>, %arg12: index, %arg13: index, %arg14: index, %arg15: memref<1x1x27x27xf32>) kernel {
       %block_id_x = gpu.block_id  x

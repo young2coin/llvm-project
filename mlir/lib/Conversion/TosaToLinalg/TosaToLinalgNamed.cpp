@@ -400,50 +400,50 @@ public:
 };
 
 
-class Conv2dConverter
-    : public OpConversionPattern<tosa::Conv2DOp> {
-public:
-  using OpConversionPattern<tosa::Conv2DOp>::OpConversionPattern;
-  LogicalResult
-  matchAndRewrite(tosa::Conv2DOp op, OpAdaptor adaptor,
-                  ConversionPatternRewriter &rewriter) const final {
-    Location loc = op.getLoc();
-    Value input = op->getOperand(0);
-    ShapedType inputTy = cast<ShapedType>(input.getType());
-    ShapedType resultTy = cast<ShapedType>(op->getResult(0).getType());
-    Type resultETy = resultTy.getElementType();
+// class Conv2dConverter
+//     : public OpConversionPattern<tosa::Conv2DOp> {
+// public:
+//   using OpConversionPattern<tosa::Conv2DOp>::OpConversionPattern;
+//   LogicalResult
+//   matchAndRewrite(tosa::Conv2DOp op, OpAdaptor adaptor,
+//                   ConversionPatternRewriter &rewriter) const final {
+//     Location loc = op.getLoc();
+//     Value input = op->getOperand(0);
+//     ShapedType inputTy = cast<ShapedType>(input.getType());
+//     ShapedType resultTy = cast<ShapedType>(op->getResult(0).getType());
+//     Type resultETy = resultTy.getElementType();
 
 
-    Value initTensor = rewriter.create<tensor::GenerateOp>(
-      loc, resultTy,
-      [&](OpBuilder &b, Location loc, ValueRange indices) {
-        Value floatZero = b.create<arith::ConstantOp>(
-              loc, b.getF32FloatAttr(0.0f));
-        b.create<tensor::YieldOp>(loc, floatZero);
-      });
+//     Value initTensor = rewriter.create<tensor::GenerateOp>(
+//       loc, resultTy,
+//       [&](OpBuilder &b, Location loc, ValueRange indices) {
+//         Value floatZero = b.create<arith::ConstantOp>(
+//               loc, b.getF32FloatAttr(0.0f));
+//         b.create<tensor::YieldOp>(loc, floatZero);
+//       });
 
-    std::string funcName = "conv";
-    for (int64_t dim : inputTy.getShape())
-      funcName += std::to_string(dim);  
+//     std::string funcName = "conv";
+//     for (int64_t dim : inputTy.getShape())
+//       funcName += std::to_string(dim);  
       
-    ModuleOp module = op->getParentOfType<ModuleOp>();
-    if (!module.lookupSymbol<func::FuncOp>(funcName)) {
-      auto funcType = rewriter.getFunctionType({input.getType(), initTensor.getType()}, {});
-      auto funcOp = func::FuncOp::create(loc, funcName, funcType);
-      module.push_back(funcOp);
-    }      
+//     ModuleOp module = op->getParentOfType<ModuleOp>();
+//     if (!module.lookupSymbol<func::FuncOp>(funcName)) {
+//       auto funcType = rewriter.getFunctionType({input.getType(), initTensor.getType()}, {});
+//       auto funcOp = func::FuncOp::create(loc, funcName, funcType);
+//       module.push_back(funcOp);
+//     }      
 
-    FlatSymbolRefAttr funcRef = SymbolRefAttr::get(rewriter.getContext(), funcName);
-    rewriter.create<func::CallOp>(
-        loc, TypeRange{}, funcRef,
-        ValueRange{input, initTensor});  
+//     FlatSymbolRefAttr funcRef = SymbolRefAttr::get(rewriter.getContext(), funcName);
+//     rewriter.create<func::CallOp>(
+//         loc, TypeRange{}, funcRef,
+//         ValueRange{input, initTensor});  
 
 
-    rewriter.replaceOp(op, initTensor);
-    return success();
+//     rewriter.replaceOp(op, initTensor);
+//     return success();
     
-  }
-};
+//   }
+// };
 
 
 

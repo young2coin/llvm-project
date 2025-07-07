@@ -82,6 +82,17 @@ static gpu::GPUModuleOp genLIF4DGPUModule(OpBuilder &builder, ModuleOp topModule
                                           "sparse_lif_4D_kernels");
 }
 
+/// Create or reuse a GPU module named "conv_kernels"
+static gpu::GPUModuleOp genConvGPUModule(OpBuilder &builder, ModuleOp topModule) {
+  for (auto mod : topModule.getOps<gpu::GPUModuleOp>()) {
+    if (mod.getName() == "conv_kernels")
+      return mod;
+  }
+  markAsGPUContainer(topModule);
+  builder.setInsertionPointToStart(&topModule.getBodyRegion().front());
+  return builder.create<gpu::GPUModuleOp>(topModule->getLoc(), "conv_kernels");
+}
+
 /// Constructs a lif GPU kernel in the given GPU module.
 static gpu::GPUFuncOp genLIFGPUFunc(OpBuilder &builder, gpu::GPUModuleOp gpuModule,
                                  SmallVectorImpl<Value> &args) {
@@ -168,6 +179,63 @@ static Value genLaunchGPUFunc(OpBuilder &builder, gpu::GPUFuncOp gpuFunc,
 
 /// launch LIF GPU kernel
 static Value genLaunchLIFGPUFunc(OpBuilder &builder, gpu::GPUFuncOp gpuFunc, Value szmA,
+                              SmallVectorImpl<Value> &args,
+                              SmallVectorImpl<Value> &tokens) {
+
+  Location loc = gpuFunc->getLoc();                              
+  // 内核配置参数
+  Value gridSize = constantIndex(builder, loc, 1);
+  
+  Value gridSizey = constantIndex(builder, loc, 1);
+  Value gridSizez = constantIndex(builder, loc, 1);
+  Value blockSize = constantIndex(builder, loc, 1024);
+  Value blockSizey =  constantIndex(builder, loc, 1);
+  Value blockSizez =  constantIndex(builder, loc, 1);
+  // Value rawGridSize = builder.create<arith::CeilDivSIOp>(loc, szmA, gridSizey);
+  // Value gridSize = builder.create<arith::MaxSIOp>(loc, rawGridSize, one);
+
+  gpu::KernelDim3 gridSizesum = {gridSize, gridSizey, gridSizez};
+  gpu::KernelDim3 blckSizesum = {blockSize, blockSizey, blockSizez};
+  
+
+  Value none = TypedValue<::mlir::IntegerType>{};
+  return builder
+      .create<gpu::LaunchFuncOp>(loc, gpuFunc, gridSizesum, blckSizesum,
+                                 /*dynSharedMemSz*/ none, args,
+                                 builder.getType<gpu::AsyncTokenType>(), tokens)
+      .getAsyncToken();
+}
+
+/// launch LIF GPU kernel
+static Value genLaunchLIF4DGPUFunc(OpBuilder &builder, gpu::GPUFuncOp gpuFunc, Value szmA,
+                              SmallVectorImpl<Value> &args,
+                              SmallVectorImpl<Value> &tokens) {
+
+  Location loc = gpuFunc->getLoc();                              
+  // 内核配置参数
+  Value gridSize = constantIndex(builder, loc, 99);
+  
+  Value gridSizey = constantIndex(builder, loc, 1);
+  Value gridSizez = constantIndex(builder, loc, 1);
+  Value blockSize = constantIndex(builder, loc, 1024);
+  Value blockSizey =  constantIndex(builder, loc, 1);
+  Value blockSizez =  constantIndex(builder, loc, 1);
+  // Value rawGridSize = builder.create<arith::CeilDivSIOp>(loc, szmA, gridSizey);
+  // Value gridSize = builder.create<arith::MaxSIOp>(loc, rawGridSize, one);
+
+  gpu::KernelDim3 gridSizesum = {gridSize, gridSizey, gridSizez};
+  gpu::KernelDim3 blckSizesum = {blockSize, blockSizey, blockSizez};
+  
+
+  Value none = TypedValue<::mlir::IntegerType>{};
+  return builder
+      .create<gpu::LaunchFuncOp>(loc, gpuFunc, gridSizesum, blckSizesum,
+                                 /*dynSharedMemSz*/ none, args,
+                                 builder.getType<gpu::AsyncTokenType>(), tokens)
+      .getAsyncToken();
+}
+
+static Value genLaunchConvGPUFunc(OpBuilder &builder, gpu::GPUFuncOp gpuFunc, Value szmA,
                               SmallVectorImpl<Value> &args,
                               SmallVectorImpl<Value> &tokens) {
 
@@ -587,7 +655,6 @@ static void genLIF4DGPUCode(PatternRewriter &rewriter, gpu::GPUFuncOp gpuFunc,
   Value bdim = rewriter.create<gpu::BlockDimOp>(loc, rewriter.getIndexType(), gpu::Dimension::x);
   Value flatRow = rewriter.create<arith::AddIOp>(loc,
                     rewriter.create<arith::MulIOp>(loc, bid, bdim), tid);
-
   // Compute N*C*H
   Value szCH = rewriter.create<arith::MulIOp>(loc, szC, szH);
   Value szCHW = rewriter.create<arith::MulIOp>(loc, szCH, szW);
@@ -1250,7 +1317,7 @@ static LogicalResult rewriteLIF4D(PatternRewriter &rewriter,
   // 启动 kernel
   genBlockingWait(rewriter, loc, tokens);
   tokens.clear();
-  Value kernelToken = genLaunchLIFGPUFunc(rewriter, gpuFunc, szN, args, tokens); // szN can be used for block count
+  Value kernelToken = genLaunchLIF4DGPUFunc(rewriter, gpuFunc, szN, args, tokens); // szN can be used for block count
 
   // 拷贝输出结果回主机
   genParametersOut(rewriter, loc, out, kernelToken, scalars, buffers, args, tokens);
@@ -1260,7 +1327,205 @@ static LogicalResult rewriteLIF4D(PatternRewriter &rewriter,
   rewriter.replaceOpWithNewOp<bufferization::ToTensorOp>(op, bufOut);
   return success();
 }
+
+static void genConv2DGPUCode(PatternRewriter &rewriter, gpu::GPUFuncOp gpuFunc,
+                             linalg::GenericOp op,
+                             SmallVectorImpl<Value> &scalars,
+                             SmallVectorImpl<Value> &buffers) {
+  Location loc = gpuFunc.getLoc();
+  Block &block = gpuFunc.getBody().front();
+  rewriter.setInsertionPointToStart(&block);
+
+  unsigned arg = 0;
+  IRMapping irMap;
+  for (Value s : scalars)
+    irMap.map(s, block.getArgument(arg++));
+  for (Value b : buffers)
+    irMap.map(b, block.getArgument(arg++));
+
+  // Extract scalar dimensions
+  Value N = block.getArgument(0);  // Batch size
+  Value H = block.getArgument(1);  // Input height
+  Value W = block.getArgument(2);  // Input width
+  Value C = block.getArgument(3);  // Input channels
+
+  Value F = block.getArgument(4);  // Output channels
+  Value KH = block.getArgument(5); // Kernel height
+  Value KW = block.getArgument(6); // Kernel width
+  Value KC = block.getArgument(7); // Kernel in-channels
+
+  // Buffers
+  Value out = block.getArgument(8);    // Output memref [N, H_out, W_out, F]
+  Value input = block.getArgument(9);  // Input memref [N, H, W, C]
+  Value filter = block.getArgument(10); // Kernel memref [F, KH, KW, C]
+
+  // Constants
+  Value c0 = rewriter.create<arith::ConstantIndexOp>(loc, 0);
+  Value c1 = rewriter.create<arith::ConstantIndexOp>(loc, 1);
+  Value c0f = rewriter.create<arith::ConstantFloatOp>(loc, APFloat(0.0f), rewriter.getF32Type());
+
+  // Thread launch index: flat index = blockIdx.x * blockDim.x + threadIdx.x
+  Value bid = rewriter.create<gpu::BlockIdOp>(loc, rewriter.getIndexType(), gpu::Dimension::x);
+  Value tid = rewriter.create<gpu::ThreadIdOp>(loc, rewriter.getIndexType(), gpu::Dimension::x);
+  Value bdim = rewriter.create<gpu::BlockDimOp>(loc, rewriter.getIndexType(), gpu::Dimension::x);
+  Value flatIdx = rewriter.create<arith::AddIOp>(
+      loc, rewriter.create<arith::MulIOp>(loc, bid, bdim), tid);
+
+  // Compute H_out = H - KH + 1, W_out = W - KW + 1
+  Value Hout = rewriter.create<arith::AddIOp>(
+      loc, rewriter.create<arith::SubIOp>(loc, H, KH), c1);
+  Value Wout = rewriter.create<arith::AddIOp>(
+      loc, rewriter.create<arith::SubIOp>(loc, W, KW), c1);
+
+  // total output elements = N * Hout * Wout * F
+  Value NH = rewriter.create<arith::MulIOp>(loc, N, Hout);
+  Value NHW = rewriter.create<arith::MulIOp>(loc, NH, Wout);
+  Value totalOut = rewriter.create<arith::MulIOp>(loc, NHW, F);
+
+  // Guard thread count
+  Value inBounds = rewriter.create<arith::CmpIOp>(
+      loc, arith::CmpIPredicate::ult, flatIdx, totalOut);
+
+  rewriter.create<scf::IfOp>(loc, inBounds, [&](OpBuilder &b, Location loc) {
+    // Decode flatIdx → (n, h, w, f)
+    Value f = b.create<arith::RemUIOp>(loc, flatIdx, F);
+    Value tmp1 = b.create<arith::DivUIOp>(loc, flatIdx, F);
+    Value w = b.create<arith::RemUIOp>(loc, tmp1, Wout);
+    Value tmp2 = b.create<arith::DivUIOp>(loc, tmp1, Wout);
+    Value h = b.create<arith::RemUIOp>(loc, tmp2, Hout);
+    Value n = b.create<arith::DivUIOp>(loc, tmp2, Hout);
+
+    // acc = 0.0
+    Value acc = b.create<arith::ConstantFloatOp>(loc, APFloat(0.0f), rewriter.getF32Type());
+
+    // for kh in [0, KH):
+    scf::ForOp khLoop = b.create<scf::ForOp>(loc, c0, KH, c1, ValueRange{acc},
+      [&](OpBuilder &b1, Location loc1, Value kh, ValueRange acc1) {
+        //   for kw in [0, KW):
+        scf::ForOp kwLoop = b1.create<scf::ForOp>(loc1, c0, KW, c1, ValueRange{acc1[0]},
+          [&](OpBuilder &b2, Location loc2, Value kw, ValueRange acc2) {
+            //     for c in [0, C):
+            scf::ForOp cLoop = b2.create<scf::ForOp>(loc2, c0, C, c1, ValueRange{acc2[0]},
+              [&](OpBuilder &b3, Location loc3, Value c, ValueRange acc3) {
+                Value hkh = b3.create<arith::AddIOp>(loc3, h, kh);
+                Value wkw = b3.create<arith::AddIOp>(loc3, w, kw);
+                Value lhs = b3.create<memref::LoadOp>(loc3, input, ValueRange{n, hkh, wkw, c});
+                Value rhs = b3.create<memref::LoadOp>(loc3, filter, ValueRange{f, kh, kw, c});
+                Value prod = b3.create<arith::MulFOp>(loc3, lhs, rhs);
+                Value sum = b3.create<arith::AddFOp>(loc3, acc3[0], prod);
+                b3.create<scf::YieldOp>(loc3, sum);
+              });
+            b2.create<scf::YieldOp>(loc2, cLoop.getResult(0));
+          });
+        b1.create<scf::YieldOp>(loc1, kwLoop.getResult(0));
+      });
+
+    Value result = khLoop.getResult(0);
+    b.create<memref::StoreOp>(loc, result, out, ValueRange{n, h, w, f});
+    b.create<scf::YieldOp>(loc);
+  });
+
+  rewriter.setInsertionPointToEnd(&block);
+  rewriter.create<gpu::ReturnOp>(loc);
+}
+
+
+
+/// Generate unique-named GPUFunc inside the given GPUModule
+static gpu::GPUFuncOp genConvGPUFuncIfNotExists(OpBuilder &builder,
+                                                gpu::GPUModuleOp module,
+                                                SmallVector<Value> &args,
+                                                StringRef baseName = "conv2d") {
+  std::string funcName = baseName.str();
+  int suffix = 0;
+
+  // 检查模块中是否存在此函数名，避免命名冲突
+  while (true) {
+    bool exists = false;
+    for (auto f : module.getOps<gpu::GPUFuncOp>()) {
+      if (f.getName() == funcName) {
+        exists = true;
+        break;
+      }
+    }
+    if (!exists)
+      break;
+    funcName = (baseName + "_" + std::to_string(++suffix)).str();
+  }
+
+  builder.setInsertionPointToStart(&module.getBodyRegion().front());
+
+  SmallVector<Type> argTypes;
+  for (Value arg : args)
+    argTypes.push_back(arg.getType());
+
+  auto funcType = builder.getFunctionType(argTypes, {});
+  auto funcOp = builder.create<gpu::GPUFuncOp>(module.getLoc(), funcName, funcType);
+  funcOp->setAttr(gpu::GPUDialect::getKernelFuncAttrName(), builder.getUnitAttr());
+  // funcOp.addEntryBlock();
+
+  return funcOp;
+}
+
+
+/// match Conv2d kernel
+static LogicalResult rewriteconv2d(PatternRewriter &rewriter,
+                                   linalg::GenericOp op) {
+  Location loc = op.getLoc();
+  Value A = op.getOperand(0);
+  Value B = op.getOperand(1);
+  Value output = op.getOperand(2);
+  SmallVector<Value> tokens;
+
+  // 提取 tensor 转 memref
+  Value bufA = genTensorToMemref(rewriter, loc, A);
+  Value bufB = genTensorToMemref(rewriter, loc, B);
+  Value bufOut = genTensorToMemref(rewriter, loc, output);
+
+  // 获取输入/卷积核尺寸
+  Value inN = linalg::createOrFoldDimOp(rewriter, loc, A, 0);
+  Value inH = linalg::createOrFoldDimOp(rewriter, loc, A, 1);
+  Value inW = linalg::createOrFoldDimOp(rewriter, loc, A, 2);
+  Value inC = linalg::createOrFoldDimOp(rewriter, loc, A, 3);
+
+  Value kN = linalg::createOrFoldDimOp(rewriter, loc, B, 0);
+  Value kH = linalg::createOrFoldDimOp(rewriter, loc, B, 1);
+  Value kW = linalg::createOrFoldDimOp(rewriter, loc, B, 2);
+  Value kC = linalg::createOrFoldDimOp(rewriter, loc, B, 3);
+
+  SmallVector<Value> scalars = {inN, inH, inW, inC, kN, kH, kW, kC};
+  SmallVector<Value> buffers = {bufOut, bufA, bufB};
+
+  // 准备 GPU 参数
+  SmallVector<Value> args;
+  Value out = genParametersIn(rewriter, loc, scalars, buffers, args, tokens,
+                              /*useHostRegistrationForOut=*/false);
+
+  // 生成 GPU 模块和 kernel 函数
+  auto saveIp = rewriter.saveInsertionPoint();
+  ModuleOp topModule = op->getParentOfType<ModuleOp>();
+  auto gpuModule = genConvGPUModule(rewriter, topModule);
+  auto gpuFunc = genConvGPUFuncIfNotExists(rewriter, gpuModule, args);
+  genConv2DGPUCode(rewriter, gpuFunc, op, scalars, buffers);
+  rewriter.restoreInsertionPoint(saveIp);
+
+  // 启动 kernel
+  genBlockingWait(rewriter, loc, tokens);
+  tokens.clear();
+  Value kernelToken = genLaunchConvGPUFunc(rewriter, gpuFunc, inN, args, tokens); // 以 inN 控制线程块数
+
+  // 拷贝结果回主机
+  genParametersOut(rewriter, loc, out, kernelToken, scalars, buffers, args, tokens);
+  genBlockingWait(rewriter, loc, tokens);
+
+  // 替换原始操作
+  rewriter.replaceOpWithNewOp<bufferization::ToTensorOp>(op, bufOut);
+  return success();
+}
  
+
+
+
 
 
 /// Match and rewrite SpMV kernel.
@@ -1965,6 +2230,7 @@ struct LinalgOpRewriter : public OpRewritePattern<linalg::GenericOp> {
     const unsigned numLoops = op.getNumLoops();
     const unsigned numTensors = op->getNumOperands();
     const auto iteratorTypes = op.getIteratorTypesArray();
+    size_t numIterators = iteratorTypes.size();
     SmallVector<AffineMap, 4> maps = op.getIndexingMapsArray();
 
     using MapList = ArrayRef<ArrayRef<AffineExpr>>;
@@ -2007,6 +2273,9 @@ struct LinalgOpRewriter : public OpRewritePattern<linalg::GenericOp> {
         matchSumReductionOfMulUnary(op)) {
       return rewriteSDDMM(rewriter, op, enableRT);
     }
+
+    if( numIterators == 7)
+      return rewriteconv2d(rewriter, op);
     else
       return rewriteLIF4D(rewriter, op, enableRT);
 
