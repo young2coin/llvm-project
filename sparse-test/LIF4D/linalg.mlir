@@ -48,9 +48,7 @@ module {
       // %f0 = arith.constant 0.0 : f32
       scf.yield %f0 : f32
     } else {
-      %l64 = arith.index_cast %sum : index to i64
-      %f = arith.uitofp %l64 : i64 to f32
-      scf.yield %f : f32
+      scf.yield %f1 : f32
     }
 
     tensor.yield %value : f32
@@ -72,9 +70,7 @@ module {
       // %f0 = arith.constant 0.0 : f32
       scf.yield %f0 : f32
     } else {
-      %l64 = arith.index_cast %sum : index to i64
-      %f = arith.uitofp %l64 : i64 to f32
-      scf.yield %f : f32
+      scf.yield %f1 : f32
     }
 
     tensor.yield %value : f32
